@@ -19,6 +19,26 @@ services:
     networks:
       - platform
 
+  # ── API Layer ──────────────────────────────────────────────
+  api:
+    build: ./infra/api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres/dubai_re
+    volumes:
+      - ./api:/app
+      - ./scripts:/app/scripts
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      retries: 3
+    networks:
+      - platform
+
   # ── Development Utilities (profile: tools) ─────────────────
   seed:
     build: ./infra/api
