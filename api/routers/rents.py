@@ -22,7 +22,7 @@ async def list_rents(
     date_from: date | None = None,
     date_to: date | None = None,
     sort_by: str = Query(DEFAULT_SORT, description="Sort field"),
-    sort_order: str = Query("desc", regex="^(asc|desc)$"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):

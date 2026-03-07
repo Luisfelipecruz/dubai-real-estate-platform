@@ -55,6 +55,21 @@ services:
     networks:
       - platform
 
+  test:
+    build: ./infra/api
+    profiles: ["tools"]
+    command: python -m pytest /app/tests -v
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres/dubai_re
+    volumes:
+      - ./api:/app
+      - ./scripts:/app/scripts
+    networks:
+      - platform
+
 volumes:
   postgres_data:
 
