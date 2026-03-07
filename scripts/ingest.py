@@ -191,9 +191,9 @@ def convert_types(df: pd.DataFrame, config: dict) -> pd.DataFrame:
     return df
 
 
-def ingest_file(filepath: str, conn) -> dict:
+def ingest_file(filepath: str, conn, override_filename: str | None = None) -> dict:
     """Ingest a single CSV file. Returns stats dict."""
-    filename = os.path.basename(filepath)
+    filename = override_filename or os.path.basename(filepath)
     print(f"\nProcessing: {filename}")
 
     df = pd.read_csv(filepath, dtype=str)
