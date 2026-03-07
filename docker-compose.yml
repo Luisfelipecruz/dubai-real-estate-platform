@@ -19,6 +19,22 @@ services:
     networks:
       - platform
 
+  # ── Development Utilities (profile: tools) ─────────────────
+  seed:
+    build: ./infra/api
+    profiles: ["tools"]
+    command: python /app/scripts/ingest.py /app/raw_source/
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/dubai_re
+    volumes:
+      - ./scripts:/app/scripts
+      - ./raw_source:/app/raw_source:ro
+    networks:
+      - platform
+
 volumes:
   postgres_data:
 
