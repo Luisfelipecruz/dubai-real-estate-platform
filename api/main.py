@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from database import engine
+from routers.upload import router as upload_router
 
 app = FastAPI(
     title="Dubai Real Estate Market Intelligence",
@@ -17,6 +18,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(upload_router)
 
 
 @app.get("/health")
