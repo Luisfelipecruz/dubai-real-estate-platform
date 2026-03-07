@@ -1,0 +1,43 @@
+# Environment
+.env
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Data (keep sample, ignore downloaded/processed)
+data/raw/
+data/validated/
+data/parquet/
+data/cleaned/
+data/enriched/
+
+# Airflow
+airflow-webserver.pid
+logs/
+
+# Spark
+spark-warehouse/
+metastore_db/
+derby.log
