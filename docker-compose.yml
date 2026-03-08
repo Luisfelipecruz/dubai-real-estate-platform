@@ -9,7 +9,8 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./infra/postgres/00-create-airflow-db.sql:/docker-entrypoint-initdb.d/00-create-airflow-db.sql
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql
     ports:
       - "5432:5432"
     healthcheck:
@@ -56,6 +57,35 @@ services:
       - /app/.next
     ports:
       - "3000:3000"
+    networks:
+      - platform
+
+  # ── Orchestration Layer ───────────────────────────────────
+  airflow:
+    build: ./infra/airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${DB_USER}:${DB_PASSWORD}@postgres:5432/airflow_metadata
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      DUBAI_RE_DB_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/dubai_re
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./spark/jobs:/opt/spark/jobs:ro
+    ports:
+      - "8080:8080"
+    entrypoint: ["/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     networks:
       - platform
 
