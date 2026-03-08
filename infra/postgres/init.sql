@@ -118,6 +118,21 @@ CREATE TABLE IF NOT EXISTS rental_yields (
     UNIQUE(area_name_en, year, quarter)
 );
 
+-- ── Quality Checks ─────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS quality_checks (
+    id SERIAL PRIMARY KEY,
+    check_name VARCHAR(100) NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    dataset VARCHAR(20),
+    status VARCHAR(10) NOT NULL,
+    message TEXT,
+    value NUMERIC(18,4),
+    threshold NUMERIC(18,4),
+    checked_at TIMESTAMP DEFAULT NOW(),
+    run_id VARCHAR(50) NOT NULL
+);
+
 -- ── Ingestion Tracking ───────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS upload_log (

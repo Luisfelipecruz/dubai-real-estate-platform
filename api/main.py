@@ -8,6 +8,7 @@ from routers.transactions import router as transactions_router
 from routers.rents import router as rents_router
 from routers.valuations import router as valuations_router
 from routers.areas import router as areas_router
+from routers.quality import router as quality_router
 
 app = FastAPI(
     title="Dubai Real Estate Market Intelligence",
@@ -32,6 +33,7 @@ app.include_router(transactions_router)
 app.include_router(rents_router)
 app.include_router(valuations_router)
 app.include_router(areas_router)
+app.include_router(quality_router)
 
 
 @app.get("/health")
