@@ -77,6 +77,7 @@ services:
     volumes:
       - ./dags:/opt/airflow/dags
       - ./spark/jobs:/opt/spark/jobs:ro
+      - pipeline_data:/opt/pipeline_data
     ports:
       - "8080:8080"
     entrypoint: ["/entrypoint.sh"]
@@ -86,6 +87,44 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    networks:
+      - platform
+
+  # ── Processing Layer ─────────────────────────────────────
+  spark-master:
+    build: ./infra/spark
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    environment:
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: "7077"
+      SPARK_MASTER_WEBUI_PORT: "8080"
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - pipeline_data:/opt/pipeline_data
+    ports:
+      - "8081:8080"
+      - "7077:7077"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - platform
+
+  spark-worker:
+    build: ./infra/spark
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment:
+      SPARK_WORKER_MEMORY: 1G
+      SPARK_WORKER_CORES: "2"
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - pipeline_data:/opt/pipeline_data
     networks:
       - platform
 
@@ -122,6 +161,7 @@ services:
 
 volumes:
   postgres_data:
+  pipeline_data:
 
 networks:
   platform:
