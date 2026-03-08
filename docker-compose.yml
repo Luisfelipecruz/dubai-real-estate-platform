@@ -94,10 +94,14 @@ services:
   spark-master:
     build: ./infra/spark
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    env_file: .env
     environment:
       SPARK_MASTER_HOST: spark-master
       SPARK_MASTER_PORT: "7077"
       SPARK_MASTER_WEBUI_PORT: "8080"
+      JDBC_URL: jdbc:postgresql://postgres:5432/dubai_re
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
     volumes:
       - ./spark/jobs:/opt/spark/jobs:ro
       - pipeline_data:/opt/pipeline_data
@@ -119,9 +123,13 @@ services:
     depends_on:
       spark-master:
         condition: service_healthy
+    env_file: .env
     environment:
       SPARK_WORKER_MEMORY: 1G
       SPARK_WORKER_CORES: "2"
+      JDBC_URL: jdbc:postgresql://postgres:5432/dubai_re
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
     volumes:
       - ./spark/jobs:/opt/spark/jobs:ro
       - pipeline_data:/opt/pipeline_data

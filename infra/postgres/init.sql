@@ -101,8 +101,21 @@ CREATE TABLE IF NOT EXISTS area_trends (
     transaction_count INT,
     total_volume NUMERIC(20,2),
     dominant_property_type VARCHAR(50),
-    yoy_price_change NUMERIC(6,2),
+    yoy_price_change NUMERIC(10,2),
     UNIQUE(area_name_en, year, quarter, dataset)
+);
+
+CREATE TABLE IF NOT EXISTS rental_yields (
+    id SERIAL PRIMARY KEY,
+    area_name_en VARCHAR(100),
+    year INT,
+    quarter INT,
+    avg_sale_price NUMERIC(18,2),
+    avg_annual_rent NUMERIC(18,2),
+    rental_yield_pct NUMERIC(6,2),
+    transaction_count INT,
+    rent_count INT,
+    UNIQUE(area_name_en, year, quarter)
 );
 
 -- ── Ingestion Tracking ───────────────────────────────────────────
@@ -138,3 +151,6 @@ CREATE INDEX idx_val_area_id ON raw_valuations(area_id);
 CREATE INDEX idx_trends_area ON area_trends(area_name_en);
 CREATE INDEX idx_trends_year ON area_trends(year, quarter);
 CREATE INDEX idx_trends_dataset ON area_trends(dataset);
+
+CREATE INDEX idx_yields_area ON rental_yields(area_name_en);
+CREATE INDEX idx_yields_year ON rental_yields(year, quarter);
