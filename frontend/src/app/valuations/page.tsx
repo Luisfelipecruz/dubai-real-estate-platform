@@ -1,38 +1,123 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
 import type { PaginatedResponse, Valuation } from "@/lib/types";
 import DataTable from "@/components/data/DataTable";
+import type { Column } from "@/components/data/DataTable";
+import FilterPanel from "@/components/data/FilterPanel";
+import type { FilterField } from "@/components/data/FilterPanel";
+import { Skeleton } from "@/components/ui/skeleton";
+
+const FILTER_FIELDS: FilterField[] = [
+  {
+    key: "area_name",
+    label: "Area",
+    type: "text",
+    placeholder: "e.g. Business Bay",
+  },
+  {
+    key: "property_type",
+    label: "Property Type",
+    type: "select",
+    options: [
+      { value: "", label: "All" },
+      { value: "Unit", label: "Unit" },
+      { value: "Land", label: "Land" },
+      { value: "Building", label: "Building" },
+    ],
+  },
+  {
+    key: "procedure_year",
+    label: "Year",
+    type: "number",
+    placeholder: "e.g. 2026",
+  },
+  {
+    key: "min_worth",
+    label: "Min Worth (AED)",
+    type: "number",
+    placeholder: "0",
+    min: 0,
+  },
+  {
+    key: "max_worth",
+    label: "Max Worth (AED)",
+    type: "number",
+    placeholder: "Any",
+    min: 0,
+  },
+];
+
+const INITIAL_FILTERS: Record<string, string> = {
+  area_name: "",
+  property_type: "",
+  procedure_year: "",
+  min_worth: "",
+  max_worth: "",
+};
 
 export default function ValuationsPage() {
   const [data, setData] = useState<PaginatedResponse<Valuation> | null>(null);
   const [loading, setLoading] = useState(true);
   const [offset, setOffset] = useState(0);
-  const [areaFilter, setAreaFilter] = useState("");
-  const [yearFilter, setYearFilter] = useState("");
-  const limit = 20;
+  const [limit, setLimit] = useState(20);
+  const [filters, setFilters] = useState(INITIAL_FILTERS);
+  const [sortBy, setSortBy] = useState("instance_date");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
 
-  useEffect(() => {
+  const fetchData = useCallback(() => {
     setLoading(true);
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (areaFilter) params.set("area_name", areaFilter);
-    if (yearFilter) params.set("procedure_year", yearFilter);
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+      sort_by: sortBy,
+      sort_order: sortOrder,
+    });
+    for (const [k, v] of Object.entries(filters)) {
+      if (v) params.set(k, v);
+    }
 
     apiFetch<PaginatedResponse<Valuation>>(`/valuations?${params}`)
       .then(setData)
       .catch(() => setData(null))
       .finally(() => setLoading(false));
-  }, [offset, areaFilter, yearFilter]);
+  }, [offset, limit, filters, sortBy, sortOrder]);
 
-  function handleFilter() {
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  function handleFilterChange(key: string, value: string) {
+    setFilters((prev) => ({ ...prev, [key]: value }));
     setOffset(0);
   }
 
-  const columns = [
+  function handleFilterReset() {
+    setFilters(INITIAL_FILTERS);
+    setOffset(0);
+  }
+
+  function handleSort(key: string) {
+    if (sortBy === key) {
+      setSortOrder((o) => (o === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(key);
+      setSortOrder("desc");
+    }
+    setOffset(0);
+  }
+
+  function handleLimitChange(newLimit: number) {
+    setLimit(newLimit);
+    setOffset(0);
+  }
+
+  const columns: Column<Valuation>[] = [
     {
       key: "instance_date",
       label: "Date",
+      sortable: true,
       render: (row: Valuation) =>
         row.instance_date ? row.instance_date.split("T")[0] : "—",
     },
@@ -43,7 +128,8 @@ export default function ValuationsPage() {
     {
       key: "actual_worth",
       label: "Worth (AED)",
-      align: "right" as const,
+      align: "right",
+      sortable: true,
       render: (row: Valuation) =>
         row.actual_worth != null
           ? row.actual_worth.toLocaleString("en-US", { maximumFractionDigits: 0 })
@@ -52,7 +138,8 @@ export default function ValuationsPage() {
     {
       key: "property_total_value",
       label: "Total Value (AED)",
-      align: "right" as const,
+      align: "right",
+      sortable: true,
       render: (row: Valuation) =>
         row.property_total_value != null
           ? row.property_total_value.toLocaleString("en-US", { maximumFractionDigits: 0 })
@@ -62,42 +149,41 @@ export default function ValuationsPage() {
   ];
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="text-2xl font-bold tracking-tight">Valuations</h1>
+    <div className="px-4 py-6 md:px-8 max-w-6xl mx-auto space-y-4">
+      <FilterPanel
+        fields={FILTER_FIELDS}
+        values={filters}
+        onChange={handleFilterChange}
+        onReset={handleFilterReset}
+      />
 
-      <div className="mt-4 flex flex-wrap gap-3">
-        <input
-          type="text"
-          placeholder="Filter by area..."
-          value={areaFilter}
-          onChange={(e) => { setAreaFilter(e.target.value); handleFilter(); }}
-          className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+      {loading ? (
+        <div className="space-y-2">
+          <Skeleton className="h-10 w-full" />
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-11 w-full" />
+          ))}
+        </div>
+      ) : data ? (
+        <DataTable
+          columns={columns}
+          data={data.data}
+          total={data.total}
+          limit={limit}
+          offset={data.offset}
+          onPageChange={setOffset}
+          sortBy={sortBy}
+          sortOrder={sortOrder}
+          onSort={handleSort}
+          onLimitChange={handleLimitChange}
         />
-        <input
-          type="number"
-          placeholder="Year (e.g. 2026)"
-          value={yearFilter}
-          onChange={(e) => { setYearFilter(e.target.value); handleFilter(); }}
-          className="w-36 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-        />
-      </div>
-
-      <div className="mt-4">
-        {loading ? (
-          <p className="text-sm text-gray-500">Loading...</p>
-        ) : data ? (
-          <DataTable
-            columns={columns}
-            data={data.data}
-            total={data.total}
-            limit={data.limit}
-            offset={data.offset}
-            onPageChange={setOffset}
-          />
-        ) : (
-          <p className="text-sm text-red-600">Failed to load data</p>
-        )}
-      </div>
+      ) : (
+        <div className="rounded-lg border border-[--border] bg-[--background] px-4 py-10 text-center">
+          <p className="text-sm text-[--muted-foreground]">
+            Failed to load valuation data. Please check the API connection.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

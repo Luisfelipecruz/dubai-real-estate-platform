@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type { AreaOverview } from "@/lib/types";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Search, MapPin } from "lucide-react";
 
 export default function AreasPage() {
   const [areas, setAreas] = useState<AreaOverview[]>([]);
@@ -24,66 +27,86 @@ export default function AreasPage() {
     : areas;
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="text-2xl font-bold tracking-tight">Areas</h1>
-      <p className="mt-1 text-sm text-gray-600">
-        Cross-dataset overview of all Dubai areas
-      </p>
-
-      <div className="mt-4">
-        <input
-          type="text"
-          placeholder="Search areas..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-        />
+    <div className="px-4 py-6 md:px-8 max-w-6xl mx-auto space-y-5">
+      {/* Search + count */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[--muted-foreground]" />
+          <input
+            type="text"
+            placeholder="Search areas..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="h-9 rounded-lg border border-[--border] bg-[--background] pl-9 pr-3 text-sm text-[--foreground] placeholder:text-[--muted-foreground] focus:border-[--ring] focus:outline-none focus:ring-2 focus:ring-[--ring]/30"
+          />
+        </div>
+        {!loading && (
+          <span className="text-xs text-[--muted-foreground]">
+            {filtered.length} of {areas.length} areas
+          </span>
+        )}
       </div>
 
+      {/* Grid */}
       {loading ? (
-        <p className="mt-6 text-sm text-gray-500">Loading...</p>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 9 }).map((_, i) => (
+            <Skeleton key={i} className="h-[140px] w-full rounded-xl" />
+          ))}
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="rounded-lg border border-[--border] bg-[--background] px-4 py-10 text-center">
+          <MapPin className="mx-auto h-8 w-8 text-[--muted-foreground] mb-2" />
+          <p className="text-sm text-[--muted-foreground]">
+            {search
+              ? `No areas matching "${search}"`
+              : "No area data available."}
+          </p>
+        </div>
       ) : (
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((area) => (
             <Link
               key={area.area_name_en}
               href={`/areas/${encodeURIComponent(area.area_name_en)}`}
-              className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md"
+              className="group block"
             >
-              <h3 className="font-semibold text-gray-900">
-                {area.area_name_en}
-              </h3>
-              <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
-                <div>
-                  <p className="text-lg font-semibold text-gray-900">
-                    {area.transaction_count}
-                  </p>
-                  <p className="text-gray-500">Transactions</p>
+              <Card className="h-full p-5 transition-all hover:shadow-md hover:border-[--primary]/40">
+                <h3 className="font-semibold text-[--foreground]">
+                  {area.area_name_en}
+                </h3>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                  <div>
+                    <p className="text-lg font-semibold text-[--foreground] tabular-nums">
+                      {area.transaction_count.toLocaleString()}
+                    </p>
+                    <p className="text-[--muted-foreground]">Transactions</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-semibold text-[--foreground] tabular-nums">
+                      {area.rent_count.toLocaleString()}
+                    </p>
+                    <p className="text-[--muted-foreground]">Rents</p>
+                  </div>
+                  <div>
+                    <p className="text-lg font-semibold text-[--foreground] tabular-nums">
+                      {area.valuation_count.toLocaleString()}
+                    </p>
+                    <p className="text-[--muted-foreground]">Valuations</p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-lg font-semibold text-gray-900">
-                    {area.rent_count}
+                {area.avg_transaction_price != null && (
+                  <p className="mt-3 text-xs text-[--muted-foreground]">
+                    Avg transaction:{" "}
+                    <span className="font-medium text-[--foreground]">
+                      {area.avg_transaction_price.toLocaleString("en-US", {
+                        maximumFractionDigits: 0,
+                      })}{" "}
+                      AED
+                    </span>
                   </p>
-                  <p className="text-gray-500">Rents</p>
-                </div>
-                <div>
-                  <p className="text-lg font-semibold text-gray-900">
-                    {area.valuation_count}
-                  </p>
-                  <p className="text-gray-500">Valuations</p>
-                </div>
-              </div>
-              {area.avg_transaction_price != null && (
-                <p className="mt-3 text-xs text-gray-500">
-                  Avg transaction:{" "}
-                  <span className="font-medium text-gray-700">
-                    {area.avg_transaction_price.toLocaleString("en-US", {
-                      maximumFractionDigits: 0,
-                    })}{" "}
-                    AED
-                  </span>
-                </p>
-              )}
+                )}
+              </Card>
             </Link>
           ))}
         </div>
