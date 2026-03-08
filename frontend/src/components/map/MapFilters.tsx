@@ -29,65 +29,59 @@ export default function MapFilters({
   onYearFromChange,
   onYearToChange,
 }: MapFiltersProps) {
+  const selectClass =
+    "h-8 rounded-md border border-[--input] bg-[--background] px-2.5 text-sm text-[--foreground] focus:outline-none focus:ring-1 focus:ring-[--ring]";
+  const inputClass =
+    "h-8 w-20 rounded-md border border-[--input] bg-[--background] px-2.5 text-sm text-[--foreground] focus:outline-none focus:ring-1 focus:ring-[--ring]";
+
   return (
-    <div className="flex flex-wrap items-end gap-3 rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-      <div>
-        <label className="mb-1 block text-xs font-medium text-gray-500">
-          Transaction Group
-        </label>
+    <div className="flex flex-wrap items-center gap-3">
+      <div className="flex items-center gap-1.5">
+        <label className="text-xs font-medium text-[--muted-foreground]">Group</label>
         <select
           value={selectedGroup}
           onChange={(e) => onGroupChange(e.target.value)}
-          className="rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+          className={selectClass}
         >
-          <option value="">All Groups</option>
+          <option value="">All</option>
           {transGroups.map((g) => (
             <option key={g} value={g}>{g}</option>
           ))}
         </select>
       </div>
 
-      <div>
-        <label className="mb-1 block text-xs font-medium text-gray-500">
-          Property Type
-        </label>
+      <div className="flex items-center gap-1.5">
+        <label className="text-xs font-medium text-[--muted-foreground]">Type</label>
         <select
           value={selectedType}
           onChange={(e) => onTypeChange(e.target.value)}
-          className="rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+          className={selectClass}
         >
-          <option value="">All Types</option>
+          <option value="">All</option>
           {propertyTypes.map((t) => (
             <option key={t} value={t}>{t}</option>
           ))}
         </select>
       </div>
 
-      <div>
-        <label className="mb-1 block text-xs font-medium text-gray-500">
-          Year From
-        </label>
+      <div className="flex items-center gap-1.5">
+        <label className="text-xs font-medium text-[--muted-foreground]">Year</label>
         <input
           type="number"
           min={yearMin}
           max={yearMax}
           value={yearFrom}
           onChange={(e) => onYearFromChange(Number(e.target.value))}
-          className="w-24 rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+          className={inputClass}
         />
-      </div>
-
-      <div>
-        <label className="mb-1 block text-xs font-medium text-gray-500">
-          Year To
-        </label>
+        <span className="text-xs text-[--muted-foreground]">–</span>
         <input
           type="number"
           min={yearMin}
           max={yearMax}
           value={yearTo}
           onChange={(e) => onYearToChange(Number(e.target.value))}
-          className="w-24 rounded-md border border-gray-300 px-3 py-1.5 text-sm"
+          className={inputClass}
         />
       </div>
     </div>

@@ -2,11 +2,15 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { ArrowLeft, Loader2 } from "lucide-react";
 import FileDropzone from "@/components/upload/FileDropzone";
 import UploadResult from "@/components/upload/UploadResult";
 import UploadHistory from "@/components/upload/UploadHistory";
 import { apiUpload } from "@/lib/api";
 import type { UploadResponse } from "@/lib/types";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 export default function UploadPage() {
   const [uploading, setUploading] = useState(false);
@@ -34,65 +38,51 @@ export default function UploadPage() {
   }
 
   return (
-    <main className="mx-auto max-w-4xl px-4 py-12">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Upload CSV</h1>
-          <p className="mt-1 text-sm text-gray-600">
-            Upload a DLD CSV file. The system auto-detects the dataset type and
-            deduplicates records.
-          </p>
-        </div>
-        <Link
-          href="/"
-          className="text-sm text-blue-600 hover:text-blue-800"
-        >
-          Back to dashboard
-        </Link>
+    <div className="px-4 py-8 md:px-8 max-w-4xl mx-auto space-y-6">
+      <div className="flex items-center gap-3">
+        <Button variant="ghost" size="sm" asChild>
+          <Link href="/">
+            <ArrowLeft className="h-4 w-4" />
+            Dashboard
+          </Link>
+        </Button>
       </div>
 
-      <div className="mt-6">
-        <FileDropzone onFileSelected={handleFile} disabled={uploading} />
+      <div>
+        <p className="text-sm text-[--muted-foreground]">
+          Upload a DLD CSV file. The system auto-detects the dataset type and deduplicates records.
+        </p>
       </div>
 
+      {/* Dropzone */}
+      <Card>
+        <CardContent className="p-6">
+          <FileDropzone onFileSelected={handleFile} disabled={uploading} />
+        </CardContent>
+      </Card>
+
+      {/* Upload state */}
       {uploading && (
-        <div className="mt-4 flex items-center gap-2 text-sm text-gray-600">
-          <svg
-            className="h-4 w-4 animate-spin"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              className="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              strokeWidth="4"
-            />
-            <path
-              className="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-            />
-          </svg>
-          Processing...
+        <div className="flex items-center gap-2 text-sm text-[--muted-foreground]">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Processing file...
         </div>
       )}
 
       {error && (
-        <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {error}
-        </div>
+        <Card className="border-[--destructive]/40 bg-[--destructive]/5">
+          <CardContent className="flex items-start gap-3 py-4">
+            <Badge variant="destructive" className="shrink-0 mt-0.5">Error</Badge>
+            <p className="text-sm text-[--destructive]">{error}</p>
+          </CardContent>
+        </Card>
       )}
 
       {result && (
-        <div className="mt-4">
-          <UploadResult result={result} onDismiss={() => setResult(null)} />
-        </div>
+        <UploadResult result={result} onDismiss={() => setResult(null)} />
       )}
 
       <UploadHistory refreshKey={refreshKey} />
-    </main>
+    </div>
   );
 }

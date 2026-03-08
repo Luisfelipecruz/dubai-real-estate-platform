@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import type { PaginatedResponse, Transaction } from "@/lib/types";
 import DataTable from "@/components/data/DataTable";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export default function TransactionsPage() {
   const [data, setData] = useState<PaginatedResponse<Transaction> | null>(null);
@@ -55,21 +56,20 @@ export default function TransactionsPage() {
   ];
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="text-2xl font-bold tracking-tight">Transactions</h1>
-
-      <div className="mt-4 flex flex-wrap gap-3">
+    <div className="px-4 py-8 md:px-8 max-w-6xl mx-auto space-y-6">
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3">
         <input
           type="text"
           placeholder="Filter by area..."
           value={areaFilter}
           onChange={(e) => { setAreaFilter(e.target.value); handleFilter(); }}
-          className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+          className="rounded-lg border border-[--border] bg-[--background] px-3 py-2 text-sm text-[--foreground] placeholder:text-[--muted-foreground] focus:border-[--ring] focus:outline-none focus:ring-2 focus:ring-[--ring]/30"
         />
         <select
           value={groupFilter}
           onChange={(e) => { setGroupFilter(e.target.value); handleFilter(); }}
-          className="rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+          className="rounded-lg border border-[--border] bg-[--background] px-3 py-2 text-sm text-[--foreground] focus:border-[--ring] focus:outline-none focus:ring-2 focus:ring-[--ring]/30"
         >
           <option value="">All groups</option>
           <option value="Sales">Sales</option>
@@ -78,22 +78,26 @@ export default function TransactionsPage() {
         </select>
       </div>
 
-      <div className="mt-4">
-        {loading ? (
-          <p className="text-sm text-gray-500">Loading...</p>
-        ) : data ? (
-          <DataTable
-            columns={columns}
-            data={data.data}
-            total={data.total}
-            limit={data.limit}
-            offset={data.offset}
-            onPageChange={setOffset}
-          />
-        ) : (
-          <p className="text-sm text-red-600">Failed to load data</p>
-        )}
-      </div>
+      {/* Table */}
+      {loading ? (
+        <div className="space-y-3">
+          <Skeleton className="h-10 w-full" />
+          {Array.from({ length: 8 }).map((_, i) => (
+            <Skeleton key={i} className="h-12 w-full" />
+          ))}
+        </div>
+      ) : data ? (
+        <DataTable
+          columns={columns}
+          data={data.data}
+          total={data.total}
+          limit={data.limit}
+          offset={data.offset}
+          onPageChange={setOffset}
+        />
+      ) : (
+        <p className="text-sm text-[--destructive]">Failed to load transaction data.</p>
+      )}
     </div>
   );
 }

@@ -1,1 +1,77 @@
 @import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-olive-50: #f7f8f0;
+  --color-olive-100: #eef0de;
+  --color-olive-200: #dde2bf;
+  --color-olive-300: #c5cc94;
+  --color-olive-400: #a8b363;
+  --color-olive-500: #8a9a44;
+  --color-olive-600: #6b7a32;
+  --color-olive-700: #545f2a;
+  --color-olive-800: #3d4522;
+  --color-olive-900: #2a2f1a;
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: #fafaf8;
+  --foreground: #1a1c17;
+  --card: #ffffff;
+  --card-foreground: #1a1c17;
+  --popover: #ffffff;
+  --popover-foreground: #1a1c17;
+  --primary: #545f2a;
+  --primary-foreground: #f7f8f0;
+  --secondary: #f0f1eb;
+  --secondary-foreground: #3d4522;
+  --muted: #f0f1eb;
+  --muted-foreground: #6b7265;
+  --accent: #f0f1eb;
+  --accent-foreground: #3d4522;
+  --destructive: #c53030;
+  --border: #e2e3dc;
+  --input: #e2e3dc;
+  --ring: #6b7a32;
+  --sidebar: #fafaf8;
+  --sidebar-foreground: #1a1c17;
+  --sidebar-accent: #eef0de;
+  --sidebar-accent-foreground: #3d4522;
+  --sidebar-border: #e2e3dc;
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+}

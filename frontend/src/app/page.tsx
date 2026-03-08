@@ -1,4 +1,9 @@
 import Link from "next/link";
+import { ArrowRight, Upload } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface Stats {
   transactions: number;
@@ -51,96 +56,107 @@ export default async function Home() {
   const quality = await getQuality();
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-12">
-      <h1 className="text-3xl font-bold tracking-tight">
-        Dubai Real Estate Market Intelligence
-      </h1>
-      <p className="mt-2 text-gray-600">
-        Upload, explore, and analyze Dubai Land Department data.
-      </p>
+    <div className="px-4 py-8 md:px-8 max-w-6xl mx-auto space-y-8">
+      {/* Stat cards */}
+      <section>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-[--muted-foreground] mb-4">
+          Dataset Overview
+        </h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard label="Transactions" value={stats?.transactions} href="/transactions" />
+          <StatCard label="Rent Contracts" value={stats?.rents} href="/rents" />
+          <StatCard label="Valuations" value={stats?.valuations} href="/valuations" />
+          <StatCard label="Uploads" value={stats?.uploads} href="/upload" />
+        </div>
+      </section>
 
-      <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Transactions"
-          value={stats?.transactions}
-          href="/transactions"
-        />
-        <StatCard
-          label="Rent Contracts"
-          value={stats?.rents}
-          href="/rents"
-        />
-        <StatCard
-          label="Valuations"
-          value={stats?.valuations}
-          href="/valuations"
-        />
-        <StatCard
-          label="Uploads"
-          value={stats?.uploads}
-          href="/upload"
-        />
-      </div>
-
-      <div className="mt-8 flex gap-4">
-        <Link
-          href="/upload"
-          className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-        >
-          Upload CSV
-        </Link>
-        <Link
-          href="/areas"
-          className="rounded-lg border border-gray-300 bg-white px-5 py-2.5 text-sm font-medium hover:bg-gray-50"
-        >
-          Browse Areas
-        </Link>
-      </div>
+      {/* Quick actions */}
+      <section className="flex flex-wrap gap-3">
+        <Button asChild>
+          <Link href="/upload">
+            <Upload className="h-4 w-4" />
+            Upload CSV
+          </Link>
+        </Button>
+        <Button variant="outline" asChild>
+          <Link href="/areas">
+            Browse Areas
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </Button>
+      </section>
 
       {/* Quality Status Panel */}
-      <div className="mt-10">
-        <h2 className="text-xl font-semibold">Data Quality</h2>
+      <section>
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-[--muted-foreground] mb-4">
+          Data Quality
+        </h2>
+
         {quality && quality.run_id ? (
-          <>
-            <div className="mt-3 flex gap-3">
-              <QualityBadge label="Pass" count={quality.summary.pass} color="green" />
-              <QualityBadge label="Fail" count={quality.summary.fail} color="red" />
-              <QualityBadge label="Warn" count={quality.summary.warn} color="yellow" />
-            </div>
-            <div className="mt-4 overflow-x-auto rounded-lg border border-gray-200">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-left text-gray-600">
-                  <tr>
-                    <th className="px-4 py-2.5 font-medium">Check</th>
-                    <th className="px-4 py-2.5 font-medium">Category</th>
-                    <th className="px-4 py-2.5 font-medium">Dataset</th>
-                    <th className="px-4 py-2.5 font-medium">Status</th>
-                    <th className="px-4 py-2.5 font-medium">Details</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {quality.checks.map((c) => (
-                    <tr key={c.check_name} className="hover:bg-gray-50">
-                      <td className="px-4 py-2 font-mono text-xs">{c.check_name}</td>
-                      <td className="px-4 py-2">{c.category}</td>
-                      <td className="px-4 py-2">{c.dataset || "—"}</td>
-                      <td className="px-4 py-2">
-                        <StatusPill status={c.status} />
-                      </td>
-                      <td className="px-4 py-2 text-gray-600">{c.message}</td>
+          <Card>
+            <CardHeader className="pb-4">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <CardTitle className="text-base">Quality Check Results</CardTitle>
+                <div className="flex gap-2">
+                  <Badge variant="success">{quality.summary.pass} Pass</Badge>
+                  {quality.summary.fail > 0 && (
+                    <Badge variant="destructive">{quality.summary.fail} Fail</Badge>
+                  )}
+                  {quality.summary.warn > 0 && (
+                    <Badge variant="warning">{quality.summary.warn} Warn</Badge>
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-t border-[--border] bg-[--muted]/50 text-left">
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-[--muted-foreground]">Check</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-[--muted-foreground]">Category</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-[--muted-foreground]">Dataset</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-[--muted-foreground]">Status</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-[--muted-foreground]">Details</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
+                  </thead>
+                  <tbody className="divide-y divide-[--border]">
+                    {quality.checks.map((c) => (
+                      <tr key={c.check_name} className="hover:bg-[--muted]/30 transition-colors">
+                        <td className="px-4 py-3 font-mono text-xs text-[--foreground]">{c.check_name}</td>
+                        <td className="px-4 py-3 text-[--foreground]">{c.category}</td>
+                        <td className="px-4 py-3 text-[--muted-foreground]">{c.dataset || "—"}</td>
+                        <td className="px-4 py-3">
+                          <StatusBadge status={c.status} />
+                        </td>
+                        <td className="px-4 py-3 text-[--muted-foreground] max-w-xs truncate">{c.message}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
         ) : (
-          <p className="mt-3 text-sm text-gray-500">
-            No quality checks have been run yet. Trigger the quality_checks DAG in Airflow.
-          </p>
+          <Card>
+            <CardContent className="py-8 text-center">
+              {/* Skeleton placeholder to illustrate loading state */}
+              <div className="mx-auto max-w-sm space-y-3 hidden">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-3/4 mx-auto" />
+                <Skeleton className="h-4 w-1/2 mx-auto" />
+              </div>
+              <p className="text-sm text-[--muted-foreground]">
+                No quality checks have been run yet.
+              </p>
+              <p className="text-xs text-[--muted-foreground] mt-1">
+                Trigger the <code className="font-mono bg-[--muted] px-1.5 py-0.5 rounded text-[--foreground]">quality_checks</code> DAG in Airflow.
+              </p>
+            </CardContent>
+          </Card>
         )}
-      </div>
-    </main>
+      </section>
+    </div>
   );
 }
 
@@ -154,48 +170,30 @@ function StatCard({
   href: string;
 }) {
   return (
-    <Link
-      href={href}
-      className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm hover:shadow-md transition-shadow"
-    >
-      <p className="text-sm text-gray-500">{label}</p>
-      <p className="mt-1 text-2xl font-semibold">
-        {value !== undefined ? value.toLocaleString() : "—"}
-      </p>
+    <Link href={href} className="group block">
+      <Card className="transition-shadow hover:shadow-md">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-xs font-medium uppercase tracking-wider text-[--muted-foreground]">
+            {label}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-3xl font-bold text-[--foreground] tabular-nums">
+            {value !== undefined ? value.toLocaleString() : (
+              <Skeleton className="h-9 w-24 inline-block" />
+            )}
+          </p>
+          <p className="mt-1.5 text-xs text-[--primary] font-medium group-hover:underline">
+            View all &rarr;
+          </p>
+        </CardContent>
+      </Card>
     </Link>
   );
 }
 
-function QualityBadge({
-  label,
-  count,
-  color,
-}: {
-  label: string;
-  count: number;
-  color: "green" | "red" | "yellow";
-}) {
-  const colors = {
-    green: "bg-green-100 text-green-800",
-    red: "bg-red-100 text-red-800",
-    yellow: "bg-yellow-100 text-yellow-800",
-  };
-  return (
-    <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium ${colors[color]}`}>
-      {count} {label}
-    </span>
-  );
-}
-
-function StatusPill({ status }: { status: "pass" | "fail" | "warn" }) {
-  const styles = {
-    pass: "bg-green-100 text-green-700",
-    fail: "bg-red-100 text-red-700",
-    warn: "bg-yellow-100 text-yellow-700",
-  };
-  return (
-    <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${styles[status]}`}>
-      {status}
-    </span>
-  );
+function StatusBadge({ status }: { status: "pass" | "fail" | "warn" }) {
+  const variant =
+    status === "pass" ? "success" : status === "fail" ? "destructive" : "warning";
+  return <Badge variant={variant}>{status}</Badge>;
 }
