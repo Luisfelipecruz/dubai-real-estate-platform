@@ -1,37 +1,44 @@
 # Dubai Real Estate Market Intelligence Platform
 
 > End-to-end data platform processing Dubai Land Department transactions, rent contracts, and property valuations.
-> Docker Compose orchestrates the full stack. Upload CSVs, deduplicate automatically, query via API, visualize on a map.
+> Docker Compose orchestrates the full stack. Upload CSVs, deduplicate automatically, query via API, visualize on an interactive map.
 
 ## Tech Stack
 
 | Layer | Technology | Role |
 |-------|-----------|------|
-| Orchestration | Docker Compose | Central platform orchestration, service networking, health checks |
-| Storage | PostgreSQL 16 | Raw data, analytics tables, ingestion tracking |
+| Orchestration | Docker Compose | 7-service platform orchestration with health checks |
+| Storage | PostgreSQL 16 | Raw data, analytics tables, quality checks, upload tracking |
 | Ingestion | Python (pandas, psycopg2) | CSV auto-detection, null normalization, deduplication |
-| API | FastAPI, Pydantic | REST endpoints with auto-generated OpenAPI docs |
-| Frontend | Next.js, shadcn/ui | Upload interface, data dashboard, area analytics |
-| Pipeline | Apache Airflow 2.x | DAG scheduling for aggregation jobs |
-| Processing | PySpark | Distributed aggregation across datasets |
-| Visualization | Kepler GL | Interactive geospatial map with time animation |
+| API | FastAPI + async SQLAlchemy | 14 REST endpoints with auto-generated OpenAPI docs |
+| Frontend | Next.js 15, React 19, shadcn/ui | Dashboard, data tables, upload interface, interactive map |
+| Pipeline | Apache Airflow 2.x | DAG scheduling for Spark aggregation and quality checks |
+| Processing | PySpark | Distributed cross-dataset aggregation |
+| Visualization | deck.gl + MapLibre GL JS | GPU-accelerated heatmap, 3D hexagons, scatterplot |
 
 ## Architecture
 
-```
-┌──────────────────────────────── docker compose ────────────────────────────────┐
-│                                                                                │
-│  ┌────────────┐  uploads CSV   ┌──────────┐  reads/writes  ┌──────────┐      │
-│  │  Next.js   │───────────────>│ FastAPI  │───────────────>│ Postgres │      │
-│  │  :3000     │  fetches data  │ :8000    │                │ :5432    │      │
-│  │            │<───────────────│          │                │          │      │
-│  └────────────┘                └──────────┘                └────┬─────┘      │
-│                                                                 │            │
-│  ┌──────────┐    triggers    ┌──────────────┐    writes         │            │
-│  │ Airflow  │───────────────>│ Spark Master │──────────────────>│            │
-│  │ :8080    │                │ + Workers    │                                │
-│  └──────────┘                └──────────────┘                                │
-└──────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph Docker Compose
+        FE["Next.js<br/>:3002"]
+        API["FastAPI<br/>:8000"]
+        DB[("PostgreSQL<br/>:5432")]
+        AF["Airflow<br/>:8080"]
+        SP["Spark Master<br/>+ Workers"]
+
+        FE -- "uploads CSV" --> API
+        API -- "reads/writes" --> DB
+        FE -- "fetches data" --> API
+        AF -- "triggers" --> SP
+        SP -- "reads/writes" --> DB
+    end
+
+    style FE fill:#3b82f6,color:#fff
+    style API fill:#10b981,color:#fff
+    style DB fill:#f59e0b,color:#fff
+    style AF fill:#8b5cf6,color:#fff
+    style SP fill:#ef4444,color:#fff
 ```
 
 ## Data Sources
@@ -54,7 +61,7 @@ Prerequisites: Docker and Docker Compose.
 git clone https://github.com/lfcruz2/dubai-real-estate-platform.git
 cd dubai-real-estate-platform
 cp .env.example .env
-docker compose up -d postgres          # Boot the database
+docker compose up -d
 ```
 
 ### Loading Data
@@ -67,41 +74,72 @@ docker compose up -d postgres          # Boot the database
 make seed
 ```
 
-The ingestion script auto-detects the dataset type, normalizes null values, and deduplicates using each dataset's unique key. Re-uploading the same file inserts 0 new rows.
+Or upload files via the web interface at http://localhost:3002/upload.
 
-## Project Status
+The ingestion pipeline auto-detects the dataset type, normalizes null values, and deduplicates. Re-uploading the same file inserts 0 new rows.
 
-| Milestone | Status |
-|-----------|--------|
-| PostgreSQL foundation + schema | Done |
-| Ingestion with deduplication | Done |
-| FastAPI + upload endpoint | Planned |
-| Next.js upload interface + dashboard | Planned |
-| Airflow + Spark aggregations | Planned |
-| Quality gates | Planned |
-| Kepler GL geospatial map | Planned |
-| CI/CD + polish | Planned |
+## Features
+
+### Dashboard
+KPI cards, top areas, recent uploads, and data quality checks with tabbed Issues/Passing panel.
+
+### Data Tables
+Filterable, sortable, paginated tables for transactions, rents, and valuations. Collapsible filter panels expose all API query parameters.
+
+### Area Intelligence
+Browse 119+ areas with cross-dataset statistics. Click any area for a detailed summary spanning transactions, rents, and valuations.
+
+### Interactive Map
+Three visualization modes powered by deck.gl:
+- **Circles** — Sized by volume, colored by transaction group
+- **Heatmap** — GPU-accelerated density visualization
+- **3D Hexagons** — Extruded hexagonal bins with height and color
+
+Features: time slider, group/type filters, summary stats bar, click-to-detail panel.
+
+### Data Ingestion
+Drag-and-drop CSV upload with auto-detection, deduplication, and upload history tracking.
+
+### Data Quality
+Automated checks for row counts, null rates, value ranges, upload freshness, and cross-dataset area coverage. Results visible on the dashboard.
+
+### Processing Pipeline
+Airflow-orchestrated Spark jobs compute quarterly aggregations and rental yields across all three datasets.
 
 ## Services
 
-| Service | URL | Status |
-|---------|-----|--------|
-| PostgreSQL | localhost:5432 | Available |
-| FastAPI Docs | http://localhost:8000/docs | Planned |
-| Next.js App | http://localhost:3000 | Planned |
-| Airflow UI | http://localhost:8080 | Planned |
-| Spark Master UI | http://localhost:8081 | Planned |
+| Service | URL |
+|---------|-----|
+| Frontend | http://localhost:3002 |
+| API Docs (Swagger) | http://localhost:8000/docs |
+| Airflow UI | http://localhost:8080 |
+| Spark Master UI | http://localhost:8081 |
 
 ## Development
 
 ```bash
-make up        # Start all available services
-make seed      # Ingest CSVs from raw_source/ into Postgres
-make test      # Run test suite in container
+make up        # Start all services
+make seed      # Ingest CSVs from raw_source/
+make test      # Run API test suite
 make down      # Stop all services
 make logs      # Tail all service logs
 make clean     # Stop everything and wipe volumes
 ```
+
+## Documentation
+
+Full documentation is available in the [Wiki](../../wiki):
+
+- [Architecture](../../wiki/Architecture) — System design and data flow
+- [Getting Started](../../wiki/Getting-Started) — Setup and first run
+- [Data Model](../../wiki/Data-Model) — Database schema and tables
+- [Data Ingestion](../../wiki/Data-Ingestion) — CSV upload and deduplication
+- [API Reference](../../wiki/API-Reference) — All 14 endpoints with parameters
+- [Frontend Guide](../../wiki/Frontend-Guide) — All 8 pages and components
+- [Map Visualization](../../wiki/Map-Visualization) — deck.gl layers and interactions
+- [Pipeline & Processing](../../wiki/Pipeline-and-Processing) — Airflow DAGs and Spark jobs
+- [Data Quality](../../wiki/Data-Quality) — Quality checks and dashboard
+- [Development](../../wiki/Development) — Commands, ports, project structure
 
 ## License
 
