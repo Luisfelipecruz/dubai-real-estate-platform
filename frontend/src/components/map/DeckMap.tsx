@@ -76,6 +76,9 @@ export default function DeckMap({ features }: DeckMapProps) {
     map.addControl(new maplibregl.NavigationControl(), "top-right");
 
     map.on("load", () => {
+      // Ensure map fills container after layout settles
+      map.resize();
+
       map.addSource("transactions", {
         type: "geojson",
         data: { type: "FeatureCollection", features: [] },
@@ -153,8 +156,8 @@ export default function DeckMap({ features }: DeckMapProps) {
   }, [features, mapReady]);
 
   return (
-    <div className="relative h-[600px] w-full rounded-lg overflow-hidden border border-gray-200">
-      <div ref={containerRef} className="h-full w-full" />
+    <div className="relative h-full w-full">
+      <div ref={containerRef} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} />
 
       {/* Legend */}
       <div className="absolute bottom-4 left-4 rounded-lg border border-gray-200 bg-white/90 p-3 text-xs backdrop-blur">

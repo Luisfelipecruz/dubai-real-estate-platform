@@ -7,8 +7,8 @@ import MapFilters from "@/components/map/MapFilters";
 const DeckMap = dynamic(() => import("@/components/map/DeckMap"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-[600px] items-center justify-center rounded-lg border border-gray-200 bg-gray-50">
-      <p className="text-gray-500">Loading map...</p>
+    <div className="flex flex-1 items-center justify-center bg-[--muted]">
+      <p className="text-[--muted-foreground]">Loading map...</p>
     </div>
   ),
 });
@@ -45,7 +45,6 @@ export default function MapPage() {
   const [yearTo, setYearTo] = useState(2026);
   const [loading, setLoading] = useState(true);
 
-  // Load filter options
   useEffect(() => {
     fetch(`${API_URL}/map/filters`)
       .then((r) => r.json())
@@ -57,7 +56,6 @@ export default function MapPage() {
       .catch(console.error);
   }, []);
 
-  // Load map data
   const fetchData = useCallback(() => {
     setLoading(true);
     const params = new URLSearchParams();
@@ -83,16 +81,10 @@ export default function MapPage() {
   }, [fetchData]);
 
   return (
-    <main className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="text-2xl font-bold tracking-tight">
-        Transaction Map
-      </h1>
-      <p className="mt-1 text-sm text-gray-600">
-        Visualize transactions by area. Circle size represents total volume, color represents transaction group.
-      </p>
-
+    <div className="flex flex-col" style={{ height: "calc(100vh - 3.5rem)" }}>
+      {/* Compact filter bar */}
       {filters && (
-        <div className="mt-4">
+        <div className="shrink-0 border-b border-[--border] bg-[--background] px-4 py-2">
           <MapFilters
             transGroups={filters.trans_groups}
             propertyTypes={filters.property_types}
@@ -110,19 +102,21 @@ export default function MapPage() {
         </div>
       )}
 
-      <div className="mt-4">
+      {/* Map fills remaining space */}
+      <div className="relative flex-1 min-h-0">
         {loading ? (
-          <div className="flex h-[600px] items-center justify-center rounded-lg border border-gray-200 bg-gray-50">
-            <p className="text-gray-500">Loading data...</p>
+          <div className="flex h-full items-center justify-center bg-[--muted]">
+            <p className="text-[--muted-foreground]">Loading data...</p>
           </div>
         ) : (
           <DeckMap features={features} />
         )}
-      </div>
 
-      <div className="mt-4 text-sm text-gray-500">
-        Showing {features.length} area groups on map
+        {/* Area count badge */}
+        <div className="absolute top-3 right-3 rounded-md bg-[--background]/90 px-2.5 py-1 text-xs text-[--muted-foreground] backdrop-blur-sm border border-[--border]">
+          {features.length} areas
+        </div>
       </div>
-    </main>
+    </div>
   );
 }

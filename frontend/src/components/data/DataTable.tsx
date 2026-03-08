@@ -1,5 +1,9 @@
 "use client";
 
+import React from "react";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+
 interface Column<T> {
   key: string;
   label: string;
@@ -28,75 +32,78 @@ export default function DataTable<T extends Record<string, unknown>>({
   const totalPages = Math.ceil(total / limit);
 
   return (
-    <div>
-      <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-100 bg-gray-50 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-              {columns.map((col) => (
-                <th
-                  key={col.key}
-                  className={`whitespace-nowrap px-4 py-3 ${
-                    col.align === "right" ? "text-right" : ""
-                  }`}
-                >
-                  {col.label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {data.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  className="px-4 py-8 text-center text-gray-500"
-                >
-                  No records found
-                </td>
+    <div className="space-y-3">
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="border-b border-[--border] bg-[--muted]/50 text-left">
+                {columns.map((col) => (
+                  <th
+                    key={col.key}
+                    className={`whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-[--muted-foreground] ${
+                      col.align === "right" ? "text-right" : ""
+                    }`}
+                  >
+                    {col.label}
+                  </th>
+                ))}
               </tr>
-            ) : (
-              data.map((row, i) => (
-                <tr key={i} className="hover:bg-gray-50">
-                  {columns.map((col) => (
-                    <td
-                      key={col.key}
-                      className={`whitespace-nowrap px-4 py-3 ${
-                        col.align === "right" ? "text-right tabular-nums" : ""
-                      }`}
-                    >
-                      {col.render
-                        ? col.render(row)
-                        : String(row[col.key] ?? "—")}
-                    </td>
-                  ))}
+            </thead>
+            <tbody className="divide-y divide-[--border]">
+              {data.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={columns.length}
+                    className="px-4 py-10 text-center text-sm text-[--muted-foreground]"
+                  >
+                    No records found
+                  </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : (
+                data.map((row, i) => (
+                  <tr key={i} className="hover:bg-[--muted]/30 transition-colors">
+                    {columns.map((col) => (
+                      <td
+                        key={col.key}
+                        className={`whitespace-nowrap px-4 py-3 text-[--foreground] ${
+                          col.align === "right" ? "text-right tabular-nums" : ""
+                        }`}
+                      >
+                        {col.render
+                          ? col.render(row)
+                          : String(row[col.key] ?? "—")}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
-      <div className="mt-3 flex items-center justify-between text-sm text-gray-600">
+      <div className="flex items-center justify-between text-sm text-[--muted-foreground]">
         <span>
-          {total.toLocaleString()} total records &middot; Page {page} of{" "}
-          {totalPages}
+          {total.toLocaleString()} total &middot; Page {page} of {totalPages}
         </span>
         <div className="flex gap-2">
-          <button
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => onPageChange(Math.max(0, offset - limit))}
             disabled={offset === 0}
-            className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium hover:bg-gray-50 disabled:opacity-40"
           >
             Previous
-          </button>
-          <button
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => onPageChange(offset + limit)}
             disabled={offset + limit >= total}
-            className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium hover:bg-gray-50 disabled:opacity-40"
           >
             Next
-          </button>
+          </Button>
         </div>
       </div>
     </div>
