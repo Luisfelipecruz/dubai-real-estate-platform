@@ -39,6 +39,26 @@ services:
     networks:
       - platform
 
+  # ── Frontend Layer ────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../infra/frontend/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      INTERNAL_API_URL: http://api:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    networks:
+      - platform
+
   # ── Development Utilities (profile: tools) ─────────────────
   seed:
     build: ./infra/api
