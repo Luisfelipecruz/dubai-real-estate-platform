@@ -172,6 +172,20 @@ services:
     networks:
       - platform
 
+  spark-test:
+    build: ./infra/spark
+    profiles: ["tools"]
+    entrypoint: ["python3", "-m", "pytest"]
+    command: ["/opt/spark/tests", "-v"]
+    environment:
+      PYSPARK_PYTHON: python3
+      PYTHONPATH: /opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs:ro
+      - ./spark/tests:/opt/spark/tests:ro
+    networks:
+      - platform
+
 volumes:
   postgres_data:
   pipeline_data:

@@ -14,7 +14,7 @@ from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOpe
 
 SPARK_CONN_ID = "spark_default"
 JOBS_DIR = "/opt/spark/jobs"
-PY_FILES = f"{JOBS_DIR}/spark_helpers.py"
+PY_FILES = f"{JOBS_DIR}/spark_helpers.py,{JOBS_DIR}/transforms.py"
 
 with DAG(
     dag_id="processing_pipeline",
