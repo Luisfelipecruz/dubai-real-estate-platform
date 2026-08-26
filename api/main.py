@@ -10,6 +10,8 @@ from routers.valuations import router as valuations_router
 from routers.areas import router as areas_router
 from routers.quality import router as quality_router
 from routers.map_data import router as map_router
+from routers.communities import router as communities_router
+from routers.notes import router as notes_router
 
 app = FastAPI(
     title="Dubai Real Estate Market Intelligence",
@@ -36,6 +38,8 @@ app.include_router(valuations_router)
 app.include_router(areas_router)
 app.include_router(quality_router)
 app.include_router(map_router)
+app.include_router(communities_router)
+app.include_router(notes_router)
 
 
 @app.get("/health")

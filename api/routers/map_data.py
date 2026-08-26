@@ -1,86 +1,22 @@
-"""Map data endpoint: area-aggregated transactions with coordinates for visualization."""
+"""Map data endpoint: area-aggregated transactions with coordinates for visualization.
 
-from fastapi import APIRouter, Query
+Coordinates come from PostGIS: each area is joined to its community polygon
+(loaded from the DLD Community.kml export by scripts/load_communities.py) and the
+point is derived with ST_Centroid.
+
+This replaced a hardcoded AREA_COORDS dictionary of 70 hand-typed approximate
+centroids, which had two bugs worth remembering: Marsa Dubai and Dubai Marina
+resolved to the identical point, as did Burj Khalifa and Downtown Dubai, so those
+areas stacked on top of each other on the map. Coverage went from 70 hand-listed
+areas to 222 real polygons.
+"""
+
+from fastapi import APIRouter
 from sqlalchemy import text
 
 from database import engine
 
 router = APIRouter()
-
-# Approximate coordinates for major Dubai areas
-# Source: Dubai Land Department area centroids
-AREA_COORDS = {
-    "Marsa Dubai": (25.0800, 55.1400),
-    "Al Barsha South Fourth": (25.0950, 55.1900),
-    "Burj Khalifa": (25.1972, 55.2744),
-    "Al Merkadh": (25.2600, 55.3200),
-    "Al Thanayah Fifth": (25.1150, 55.1950),
-    "Madinat Al Mataar": (25.2300, 55.3500),
-    "Palm Jumeirah": (25.1124, 55.1390),
-    "Business Bay": (25.1860, 55.2640),
-    "Dubai Marina": (25.0800, 55.1400),
-    "Downtown Dubai": (25.1972, 55.2744),
-    "Jumeirah Village Circle": (25.0650, 55.2100),
-    "Al Barsha South Third": (25.0980, 55.2000),
-    "Wadi Al Safa 5": (25.0550, 55.2400),
-    "Jabal Ali First": (25.0200, 55.0700),
-    "Al Hebiah Fourth": (25.0300, 55.2300),
-    "Al Yelayiss 2": (25.0050, 55.1300),
-    "Al Thanayah Fourth": (25.1100, 55.1900),
-    "Hadaeq Sheikh Mohammed Bin Rashid": (25.0500, 55.2600),
-    "Mirdif": (25.2200, 55.4200),
-    "Al Warsan First": (25.1600, 55.4000),
-    "Al Barsha South Second": (25.1000, 55.2050),
-    "Me'Aisem First": (25.0450, 55.2000),
-    "Wadi Al Safa 7": (25.0500, 55.2200),
-    "Al Yufrah 2": (25.0100, 55.1600),
-    "Nadd Hessa": (25.0700, 55.2400),
-    "Saih Shuaib 2": (24.9500, 55.1500),
-    "Al Hebiah First": (25.0400, 55.2200),
-    "World Islands": (25.2200, 55.1700),
-    "Oud Al Muteena First": (25.2800, 55.3900),
-    "Al Thanyah First": (25.1200, 55.1800),
-    "Al Jadaf": (25.2100, 55.3300),
-    "Al Quoz Industrial Fourth": (25.1400, 55.2200),
-    "Al Quoz Industrial First": (25.1500, 55.2100),
-    "Al Warsan Second": (25.1500, 55.4100),
-    "Umm Hurair Second": (25.2300, 55.3200),
-    "Al Barshaa South First": (25.1020, 55.2100),
-    "Dubai Investment Park First": (25.0000, 55.1500),
-    "Dubai Investment Park Second": (24.9900, 55.1400),
-    "Al Quoz Third": (25.1350, 55.2300),
-    "Al Quoz Fourth": (25.1300, 55.2400),
-    "Al Sufouh Second": (25.1100, 55.1500),
-    "Al Sufouh First": (25.1050, 55.1600),
-    "Jabal Ali Industrial Second": (25.0100, 55.0600),
-    "Wadi Al Safa 3": (25.0600, 55.2500),
-    "Al Twar First": (25.2650, 55.3700),
-    "Umm Suqeim Third": (25.1300, 55.1800),
-    "Al Garhoud": (25.2400, 55.3500),
-    "Nad Al Sheba First": (25.1600, 55.3200),
-    "Hor Al Anz": (25.2750, 55.3300),
-    "Jumeirah First": (25.2100, 55.2400),
-    "Al Muhaisnah Fourth": (25.2700, 55.4100),
-    "Jumeirah Second": (25.2000, 55.2300),
-    "Al Rashidiya": (25.2300, 55.3800),
-    "Al Mamzar": (25.2900, 55.3500),
-    "Al Wasl": (25.2000, 55.2600),
-    "Umm Al Sheif": (25.1600, 55.2200),
-    "Al Quoz First": (25.1600, 55.2000),
-    "Al Quoz Second": (25.1500, 55.2200),
-    "Al Karama": (25.2400, 55.3000),
-    "Deira": (25.2700, 55.3200),
-    "Bur Dubai": (25.2500, 55.3000),
-    "Al Satwa": (25.2300, 55.2700),
-    "Al Mizhar First": (25.2600, 55.4400),
-    "Al Mizhar Second": (25.2500, 55.4500),
-    "Al Nahda First": (25.2900, 55.3700),
-    "Al Nahda Second": (25.2850, 55.3800),
-    "Al Khawaneej First": (25.2700, 55.4600),
-    "Al Khawaneej Second": (25.2600, 55.4700),
-    "Nad Al Sheba Third": (25.1400, 55.3400),
-    "Al Lisaili": (25.0500, 55.4500),
-}
 
 
 @router.get("/map/transactions")
@@ -109,32 +45,46 @@ async def get_map_transactions(
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
+    # Aggregate first, then join the 222-row polygon table — joining before the
+    # GROUP BY would drag the geometry through the aggregation for every row.
     async with engine.connect() as conn:
         rows = await conn.execute(text(f"""
+            WITH agg AS (
+                SELECT
+                    area_name_en,
+                    area_id,
+                    trans_group_en,
+                    COUNT(*) AS transaction_count,
+                    AVG(actual_worth) AS avg_amount,
+                    SUM(actual_worth) AS total_volume,
+                    AVG(meter_sale_price) AS avg_price_sqm,
+                    MIN(instance_date) AS earliest_date,
+                    MAX(instance_date) AS latest_date
+                FROM raw_transactions
+                {where}
+                GROUP BY area_name_en, area_id, trans_group_en
+            )
             SELECT
-                area_name_en,
-                area_id,
-                trans_group_en,
-                COUNT(*) AS transaction_count,
-                AVG(actual_worth) AS avg_amount,
-                SUM(actual_worth) AS total_volume,
-                AVG(meter_sale_price) AS avg_price_sqm,
-                MIN(instance_date) AS earliest_date,
-                MAX(instance_date) AS latest_date
-            FROM raw_transactions
-            {where}
-            GROUP BY area_name_en, area_id, trans_group_en
-            ORDER BY total_volume DESC
+                a.area_name_en,
+                a.area_id,
+                a.trans_group_en,
+                a.transaction_count,
+                a.avg_amount,
+                a.total_volume,
+                a.avg_price_sqm,
+                a.earliest_date,
+                a.latest_date,
+                ST_Y(ST_Centroid(c.geom)) AS latitude,
+                ST_X(ST_Centroid(c.geom)) AS longitude
+            FROM agg a
+            JOIN communities c
+              ON UPPER(TRIM(a.area_name_en)) = c.community_name_norm
+            ORDER BY a.total_volume DESC
         """), params)
 
-        features = []
-        for r in rows.fetchall():
-            area = r[0]
-            coords = AREA_COORDS.get(area)
-            if not coords:
-                continue
-            features.append({
-                "area_name": area,
+        features = [
+            {
+                "area_name": r[0],
                 "area_id": r[1],
                 "trans_group": r[2],
                 "transaction_count": r[3],
@@ -143,9 +93,11 @@ async def get_map_transactions(
                 "avg_price_sqm": round(float(r[6]), 2) if r[6] else 0,
                 "earliest_date": r[7].isoformat() if r[7] else None,
                 "latest_date": r[8].isoformat() if r[8] else None,
-                "latitude": coords[0],
-                "longitude": coords[1],
-            })
+                "latitude": round(float(r[9]), 6),
+                "longitude": round(float(r[10]), 6),
+            }
+            for r in rows.fetchall()
+        ]
 
     return {"features": features, "total": len(features)}
 

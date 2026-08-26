@@ -2,6 +2,10 @@
 -- Runs automatically on first postgres boot via docker-entrypoint-initdb.d
 -- Tables match DLD CSV exports from data.dubai
 
+-- ── Extensions ───────────────────────────────────────────────────
+
+CREATE EXTENSION IF NOT EXISTS postgis;
+
 -- ── Raw Data Tables ──────────────────────────────────────────────
 
 -- Transactions: sales, mortgages, gifts
@@ -148,7 +152,34 @@ CREATE TABLE IF NOT EXISTS upload_log (
     error_details TEXT
 );
 
+-- ── Spatial Reference Data ───────────────────────────────────────
+
+-- Dubai community boundaries, loaded from the DLD Community.kml export.
+-- Replaces the hardcoded AREA_COORDS centroid dictionary that used to live
+-- in api/routers/map_data.py: centroids are now derived with ST_Centroid.
+CREATE TABLE IF NOT EXISTS communities (
+    id SERIAL PRIMARY KEY,
+    community_name_en VARCHAR(200) NOT NULL,
+    community_name_norm VARCHAR(200) NOT NULL,  -- upper/trimmed, for joining to area_name_en
+    community_number VARCHAR(50),
+    geom geometry(MultiPolygon, 4326) NOT NULL,
+    loaded_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE (community_name_norm)
+);
+
 -- ── Indexes ──────────────────────────────────────────────────────
+
+-- GiST over the geometry: turns the point-in-polygon scan into an index scan.
+-- Capture EXPLAIN ANALYZE before and after creating this to see the difference.
+CREATE INDEX idx_communities_geom ON communities USING GIST (geom);
+CREATE INDEX idx_communities_name_norm ON communities(community_name_norm);
+
+-- Functional index on the geography cast. Needed because ordering by distance in
+-- real metres uses `geom::geography <-> point::geography`, and the geometry index
+-- above cannot answer an operator on the geography type. Ordering by the geometry
+-- `<->` instead would sort by planar degrees, which is not the same ordering at
+-- Dubai's latitude.
+CREATE INDEX idx_communities_geog ON communities USING GIST ((geom::geography));
 
 CREATE INDEX idx_tx_area ON raw_transactions(area_name_en);
 CREATE INDEX idx_tx_date ON raw_transactions(instance_date);
