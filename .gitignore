@@ -41,3 +41,14 @@ logs/
 spark-warehouse/
 metastore_db/
 derby.log
+
+# Source data exports — downloaded locally, never committed (1.2 GB)
+raw_full/
+raw_source/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+*.tsbuildinfo
+raw_full/
+cat >> EOF
+

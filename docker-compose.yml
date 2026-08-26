@@ -1,7 +1,9 @@
 services:
   # ── Storage Layer ──────────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    # PostGIS build of Postgres 16 — the plain postgres:16-alpine image has no
+    # postgis extension available, which blocks geometry storage entirely.
+    image: postgis/postgis:16-3.4
     env_file: .env
     environment:
       POSTGRES_DB: dubai_re
@@ -28,6 +30,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres/dubai_re
+      # SQL_ECHO=1 docker compose up -d api  -> logs every statement SQLAlchemy emits.
+      # Used to show GET /notes issuing 2 queries instead of 1+N (selectinload).
+      SQL_ECHO: ${SQL_ECHO:-0}
     volumes:
       - ./api:/app
       - ./scripts:/app/scripts
