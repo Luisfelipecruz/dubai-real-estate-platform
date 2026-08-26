@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
-import { Circle, Flame, Hexagon } from "lucide-react";
+import { Circle, Flame, Hexagon, Shapes } from "lucide-react";
 import MapFilters from "@/components/map/MapFilters";
 import TimeSlider from "@/components/map/TimeSlider";
 import MapDetailPanel from "@/components/map/MapDetailPanel";
@@ -39,7 +39,7 @@ interface Filters {
   year_max: number | null;
 }
 
-type ViewMode = "circles" | "heatmap" | "hexagon";
+type ViewMode = "circles" | "heatmap" | "hexagon" | "boundaries";
 
 export default function MapPage() {
   const [features, setFeatures] = useState<MapFeature[]>([]);
@@ -161,6 +161,17 @@ export default function MapPage() {
               >
                 <Hexagon className="h-3.5 w-3.5" />
                 3D Hexagon
+              </button>
+              <button
+                onClick={() => setViewMode("boundaries")}
+                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  viewMode === "boundaries"
+                    ? "bg-[--background] text-[--foreground] shadow-sm border border-[--border]"
+                    : "text-[--muted-foreground] hover:text-[--foreground]"
+                }`}
+              >
+                <Shapes className="h-3.5 w-3.5" />
+                Boundaries
               </button>
             </div>
           </div>

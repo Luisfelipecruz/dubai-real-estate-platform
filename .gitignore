@@ -48,7 +48,8 @@ raw_source/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
-*.tsbuildinfo
-raw_full/
-cat >> EOF
 
+# Agent phase artefacts - regenerated each phase, never tracked
+COMMIT-COMMANDS.sh
+.pr-bodies/
+PLAN-uncommitted-to-PR.md
