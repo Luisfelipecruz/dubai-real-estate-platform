@@ -8,9 +8,9 @@
 | Layer | Technology | Role |
 |-------|-----------|------|
 | Orchestration | Docker Compose | 7-service platform orchestration with health checks |
-| Storage | PostgreSQL 16 | Raw data, analytics tables, quality checks, upload tracking |
+| Storage | PostgreSQL 16 + PostGIS 3.4 | Raw data, analytics tables, 222 community polygons, quality checks, upload tracking |
 | Ingestion | Python (pandas, psycopg2) | CSV auto-detection, null normalization, deduplication |
-| API | FastAPI + async SQLAlchemy | 14 REST endpoints with auto-generated OpenAPI docs |
+| API | FastAPI + async SQLAlchemy 2.0 | 27 REST operations with auto-generated OpenAPI docs; Core for analytics reads, ORM + Alembic for the write path |
 | Frontend | Next.js 15, React 19, shadcn/ui | Dashboard, data tables, upload interface, interactive map |
 | Pipeline | Apache Airflow 2.x | DAG scheduling for Spark aggregation and quality checks |
 | Processing | PySpark | Distributed cross-dataset aggregation |

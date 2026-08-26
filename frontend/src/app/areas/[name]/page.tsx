@@ -5,11 +5,24 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type { AreaSummary, AreaDatasetStats } from "@/lib/types";
+import { AreaPolygonMap } from "@/components/areas/AreaPolygonMap";
+import { AreaHistoryChart, type HistoryPoint } from "@/components/areas/AreaHistoryChart";
+
+interface AreaHistory {
+  area_name_en: string;
+  interval: string;
+  points: HistoryPoint[];
+  sales_are_historical: boolean;
+  rents_are_historical: boolean;
+  rent_registered_from: string | null;
+  rent_registered_to: string | null;
+}
 
 export default function AreaDetailPage() {
   const params = useParams();
   const areaName = decodeURIComponent(params.name as string);
   const [summary, setSummary] = useState<AreaSummary | null>(null);
+  const [history, setHistory] = useState<AreaHistory | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -17,6 +30,12 @@ export default function AreaDetailPage() {
       .then(setSummary)
       .catch(() => setSummary(null))
       .finally(() => setLoading(false));
+  }, [areaName]);
+
+  useEffect(() => {
+    apiFetch<AreaHistory>(`/areas/${encodeURIComponent(areaName)}/history`)
+      .then(setHistory)
+      .catch(() => setHistory(null));
   }, [areaName]);
 
   if (loading) {
@@ -36,7 +55,7 @@ export default function AreaDetailPage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-8">
+    <div className="mx-auto max-w-5xl px-4 py-8">
       <Link
         href="/areas"
         className="text-sm text-blue-600 hover:text-blue-800"
@@ -53,6 +72,23 @@ export default function AreaDetailPage() {
         <StatsCard title="Transactions" stats={summary.transactions} />
         <StatsCard title="Rent Contracts" stats={summary.rents} />
         <StatsCard title="Valuations" stats={summary.valuations} />
+      </div>
+
+      <div className="mt-6 space-y-4">
+        <AreaPolygonMap areaName={areaName} />
+        {history && history.points.length > 0 ? (
+          <AreaHistoryChart
+            points={history.points}
+            rentsAreHistorical={history.rents_are_historical}
+            rentFrom={history.rent_registered_from}
+            rentTo={history.rent_registered_to}
+          />
+        ) : (
+          <div className="rounded-xl border border-gray-200 bg-white p-5">
+            <h2 className="text-sm font-semibold text-gray-900">Sales history</h2>
+            <p className="mt-2 text-sm text-gray-500">Loading…</p>
+          </div>
+        )}
       </div>
 
       <div className="mt-6 flex gap-3">
