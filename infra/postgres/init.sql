@@ -6,6 +6,13 @@
 
 CREATE EXTENSION IF NOT EXISTS postgis;
 
+-- pgvector. Requires the custom image in infra/postgres/Dockerfile -- the stock
+-- postgis/postgis:16-3.4 image does not carry the extension and this line fails
+-- against it. Note that docker-entrypoint-initdb.d runs ONCE, on an empty data
+-- directory: adding an extension here has no effect on a volume that already
+-- exists. See docs/rag-corpus-design.md for the rebuild sequence.
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- ── Raw Data Tables ──────────────────────────────────────────────
 
 -- Transactions: sales, mortgages, gifts
@@ -200,3 +207,70 @@ CREATE INDEX idx_trends_dataset ON area_trends(dataset);
 
 CREATE INDEX idx_yields_area ON rental_yields(area_name_en);
 CREATE INDEX idx_yields_year ON rental_yields(year, quarter);
+
+-- ── Retrieval Corpus (pgvector) ──────────────────────────────────
+
+-- One row per chunk of retrievable TEXT. Deliberately not "the database, embedded":
+-- transactions, rents and valuations stay in their typed columns and are answered by
+-- SQL. Only three genuinely textual sources land here -- see docs/rag-corpus-design.md
+-- for why a median price per m2 must never be answered from a vector index.
+--
+--   source_type = 'doc'         one chunk per section of docs/*.md
+--   source_type = 'area_sheet'  one chunk per area, rendered from aggregates
+--   source_type = 'note'        one chunk per analyst note in area_notes
+CREATE TABLE IF NOT EXISTS doc_chunks (
+    id              BIGSERIAL PRIMARY KEY,
+    source_type     VARCHAR(20)  NOT NULL,
+    source_id       VARCHAR(200) NOT NULL,
+    chunk_index     INT          NOT NULL,
+    -- 'changelog.md > v0.5.0 > The synthetic rent key'. Prepended to the embedded
+    -- text so an isolated chunk keeps the context its position used to give it.
+    heading_path    TEXT,
+    content         TEXT         NOT NULL,
+    -- sha256 of the content. Makes re-indexing a diff instead of a rebuild: a chunk
+    -- whose hash is already present is skipped without being re-embedded.
+    content_hash    CHAR(64)     NOT NULL,
+    -- Token count as counted by the embedding model's own tokenizer and returned by
+    -- the embeddings service -- not an estimate. The chunker uses a cheaper word-based
+    -- approximation to pick boundaries; this column records what actually happened.
+    token_count     INT          NOT NULL,
+    -- Asserted at query time. Changing the embedding model invalidates every vector
+    -- in this table, and a silent mismatch returns fluent nonsense rather than an
+    -- error, so the model that produced each row is stored with it.
+    embedding_model VARCHAR(80)  NOT NULL,
+    embedding       vector(384)  NOT NULL,
+    -- Heading path is folded into the lexical vector, not just the dense one. The
+    -- identity tokens that dense retrieval loses -- 'v0.5.0', area names, column
+    -- names -- live in headings at least as often as in body text.
+    tsv             tsvector GENERATED ALWAYS AS (
+                        to_tsvector('english', coalesce(heading_path, '') || ' ' || content)
+                    ) STORED,
+    generated_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    UNIQUE (source_type, source_id, content_hash)
+);
+
+-- HNSW over cosine distance. m=16 / ef_construction=64 are the pgvector defaults and
+-- are kept on purpose.
+--
+-- Measured at the built corpus size of 295 chunks (docs/hybrid-retrieval-plans.md,
+-- Experiment 1): this index is 3.5x FASTER than the sequential scan -- 0.131 ms and 340
+-- buffers against 0.464 ms and 645 -- and the planner does not use it. pgvector prices
+-- the HNSW descent at a startup cost of 302.21, five times the total cost of scanning
+-- and sorting the entire table (69.27), so the seq scan wins the cost comparison it
+-- loses on the clock. Expect the index to start being chosen somewhere near 1,500
+-- chunks.
+--
+-- It is kept, at 600 kB, because it costs a millisecond per re-index and begins paying
+-- on its own the moment the corpus grows. This is NOT the GiST outcome from
+-- docs/postgis-query-plans.md, which it was expected to repeat: there the index really
+-- was slower and the estimate was optimistic. Here it is faster and the estimate is
+-- pessimistic. Both look like "small table, index not worth it" and they are not alike.
+CREATE INDEX IF NOT EXISTS idx_chunks_hnsw ON doc_chunks
+    USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+
+-- Lexical half of hybrid retrieval. Not decoration: area names, CNT contract prefixes
+-- and column names like meter_sale_price are identity tokens, and identity is exactly
+-- what a 384-dimensional semantic space discards.
+CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON doc_chunks USING GIN (tsv);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_src ON doc_chunks (source_type, source_id);

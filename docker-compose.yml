@@ -1,9 +1,29 @@
 services:
   # ── Storage Layer ──────────────────────────────────────────
   postgres:
-    # PostGIS build of Postgres 16 — the plain postgres:16-alpine image has no
-    # postgis extension available, which blocks geometry storage entirely.
-    image: postgis/postgis:16-3.4
+    # Built, not pulled. No published image carries both PostGIS and pgvector, and this
+    # stack needs both: PostGIS for the map and six spatial endpoints, pgvector for the
+    # retrieval corpus. infra/postgres/Dockerfile adds pgvector to postgis/postgis:16-3.4.
+    #
+    # NOTE: init.sql runs only on an EMPTY data directory, so switching to this image on
+    # an existing volume gives you the binary without the extension -- `CREATE EXTENSION
+    # vector` never runs.
+    #
+    # That does NOT mean you have to drop the volume. An earlier version of this comment
+    # said it did, and it would have destroyed 561,115 loaded rows for nothing. The
+    # extension needs the pgvector BINARY present in the image; it does not care how old
+    # the cluster is. On an existing volume, build the image, recreate the container, and
+    # run the two statements init.sql would have run:
+    #
+    #   docker compose build postgres && docker compose up -d postgres
+    #   docker compose exec postgres psql -U $DB_USER -d dubai_re \
+    #     -c "CREATE EXTENSION IF NOT EXISTS vector;"
+    #   awk '/^CREATE TABLE IF NOT EXISTS doc_chunks/,0' infra/postgres/init.sql \
+    #     | docker compose exec -T postgres psql -U $DB_USER -d dubai_re -v ON_ERROR_STOP=1
+    #
+    # init.sql stays correct and is what a genuinely fresh volume uses. It is simply not
+    # the only way in.
+    build: ./infra/postgres
     env_file: .env
     environment:
       POSTGRES_DB: dubai_re
@@ -33,6 +53,34 @@ services:
       # SQL_ECHO=1 docker compose up -d api  -> logs every statement SQLAlchemy emits.
       # Used to show GET /notes issuing 2 queries instead of 1+N (selectinload).
       SQL_ECHO: ${SQL_ECHO:-0}
+      # ── Copilot ────────────────────────────────────────────────
+      # Every key has a working default so a fresh clone starts with no .env editing.
+      # Deliberately NO depends_on for embeddings/ollama/voice: the API must start and
+      # serve its 27 core operations while the models are still loading, and on a
+      # machine that never starts them at all.
+      EMBEDDINGS_URL: ${EMBEDDINGS_URL:-http://embeddings:8100}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+      RETRIEVAL_TOP_K: ${RETRIEVAL_TOP_K:-20}
+      RERANK_TOP_N: ${RERANK_TOP_N:-5}
+      RRF_K: ${RRF_K:-60}
+      LLM_PROVIDER: ${LLM_PROVIDER:-local}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5}
+      # Points at the HOST's Ollama, not the container below. Docker Desktop on macOS
+      # cannot pass the Apple GPU into a Linux container, so a containerised Ollama runs
+      # CPU-only while the host's uses Metal -- the same model, several times slower, for
+      # no benefit. Set OLLAMA_BASE_URL=http://ollama:11434 to use the container instead
+      # (Linux with a GPU, or CI).
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:20b}
+      LLM_MAX_INPUT_TOKENS: ${LLM_MAX_INPUT_TOKENS:-8000}
+      LLM_MAX_COST_USD_PER_REQUEST: ${LLM_MAX_COST_USD_PER_REQUEST:-0.50}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-8}
+      VOICE_URL: ${VOICE_URL:-http://voice:8200}
+    # Docker Desktop resolves host.docker.internal on its own; Linux does not, and this
+    # line is what makes the host-Ollama default portable rather than a Mac-only trick.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./api:/app
       - ./scripts:/app/scripts
@@ -62,6 +110,75 @@ services:
       - /app/.next
     ports:
       - "3002:3000"
+    networks:
+      - platform
+
+  # ── Copilot Layer ─────────────────────────────────────────
+  #
+  # Three services, three different reasons for existing separately from the API.
+  #
+  # embeddings  starts by default. ~900 MB of CPU torch that has no business in the API
+  #             image, and models that should load once into a volume rather than once
+  #             per API rebuild.
+  # ollama      profile: llm, and NOT the default target. On macOS this container is
+  #             CPU-only -- Docker Desktop cannot pass the Apple GPU to a Linux guest --
+  #             so the api service points at the host's Ollama instead. This definition
+  #             exists for Linux hosts with a GPU and for CI, where a self-contained
+  #             stack matters more than throughput. Opt-in either way: the same code
+  #             paths run against the Anthropic API with LLM_PROVIDER=anthropic, and
+  #             against nothing at all with LLM_PROVIDER=none.
+  # voice       profile: voice. Arrives in m17; declared here so this file lands whole
+  #             in one PR. Profiled services are excluded from `up` AND from `build`,
+  #             so the missing build context below is inert until m17 creates it.
+
+  embeddings:
+    build: ./infra/embeddings
+    environment:
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+      RERANKER_MODEL: ${RERANKER_MODEL:-BAAI/bge-reranker-base}
+      HF_HOME: /models
+    volumes:
+      # Named volume, not a bind mount: ~1.2 GB of weights that must survive a rebuild
+      # but must never end up in the working tree or in a git status.
+      - model_cache:/models
+    ports:
+      - "8100:8100"
+    healthcheck:
+      # /health answers before the weights are loaded, on purpose -- a cold start is
+      # minutes and must not look like a crash. start_period covers the download.
+      test: ["CMD", "curl", "-f", "http://localhost:8100/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
+    networks:
+      - platform
+
+  ollama:
+    image: ollama/ollama:0.5.13
+    profiles: ["llm"]
+    volumes:
+      - ollama_models:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 15s
+      retries: 5
+      start_period: 60s
+    networks:
+      - platform
+
+  voice:
+    build: ./infra/voice
+    profiles: ["voice"]
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-base.en}
+      HF_HOME: /models
+    volumes:
+      - model_cache:/models
+    ports:
+      - "8200:8200"
     networks:
       - platform
 
@@ -162,6 +279,30 @@ services:
     networks:
       - platform
 
+  corpus:
+    # Builds and indexes the retrieval corpus. Runs under `tools` rather than as a
+    # long-lived service because it is a batch job with an exit code.
+    #
+    # It needs three mounts the `api` service does not have: ./docs (source 1 of the
+    # corpus), ./api (services.chunking), and the corpus volume. Its DATABASE_URL is
+    # the SYNC one -- psycopg2 cannot parse postgresql+asyncpg://.
+    build: ./infra/api
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/dubai_re
+      EMBEDDINGS_URL: ${EMBEDDINGS_URL:-http://embeddings:8100}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+    volumes:
+      - ./api:/app
+      - ./scripts:/app/scripts
+      - ./docs:/app/docs:ro
+      - corpus_data:/app/corpus
+    networks:
+      - platform
+
   test:
     build: ./infra/api
     profiles: ["tools"]
@@ -171,9 +312,19 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@postgres/dubai_re
+      # The suite does not depend on the embeddings service being up: chunking is pure,
+      # RRF is pure, and the lexical arm is SQL only. Retrieval tests that genuinely
+      # need a model skip themselves rather than failing the run.
+      EMBEDDINGS_URL: ${EMBEDDINGS_URL:-http://embeddings:8100}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
     volumes:
       - ./api:/app
       - ./scripts:/app/scripts
+      # The golden retrieval set. Mounted read-only into the TEST service and nowhere
+      # else -- deliberately not into `corpus`, which builds the index. The eval set
+      # being unreachable from the corpus builder is the fix m13a exists to make; a
+      # mount that handed it to the builder would undo it.
+      - ./eval:/app/eval:ro
     networks:
       - platform
 
@@ -194,6 +345,9 @@ services:
 volumes:
   postgres_data:
   pipeline_data:
+  model_cache:      # BGE bi-encoder + cross-encoder + whisper/piper weights
+  ollama_models:    # local LLM weights, profile: llm
+  corpus_data:      # corpus.jsonl handed from the build step to the index step
 
 networks:
   platform:
