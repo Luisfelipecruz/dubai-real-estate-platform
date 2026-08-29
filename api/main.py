@@ -1,3 +1,6 @@
+import logging
+from importlib import import_module
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -40,6 +43,49 @@ app.include_router(quality_router)
 app.include_router(map_router)
 app.include_router(communities_router)
 app.include_router(notes_router)
+
+
+# ── Copilot routers ────────────────────────────────────────────────────────
+#
+# Registered by name rather than by import, and tolerantly.
+#
+# Each copilot router ships in its own PR (search m13, ask m14, agent m15, voice m17)
+# and each depends on a service that may not be running: the embeddings container, a
+# local LLM, the speech stack. A missing module here is a CONFIGURATION STATE, not an
+# error -- `LLM_PROVIDER=none` on a machine with 8 GB of RAM must still serve the map,
+# and the 27 core operations above have no dependency on any of this.
+#
+# The ModuleNotFoundError is narrowed to the router module itself on purpose. A blanket
+# except would also swallow `routers.search` failing because httpx is missing, and the
+# endpoint would then be absent with no explanation anywhere in the logs -- which is a
+# far worse failure than a crash at startup.
+logger = logging.getLogger(__name__)
+
+COPILOT_ROUTERS = ("search", "ask", "agent", "voice")
+
+
+def register_copilot_routers(application, names=COPILOT_ROUTERS, importer=import_module):
+    """Include each copilot router that is present. Returns the names registered.
+
+    A function rather than an inline loop so the two behaviours that matter can be
+    asserted directly in api/tests/test_main.py: an absent module is skipped, and a
+    module that exists but fails to import is NOT.
+    """
+    registered = []
+    for name in names:
+        module_name = f"routers.{name}"
+        try:
+            application.include_router(importer(module_name).router)
+        except ModuleNotFoundError as exc:
+            if exc.name != module_name:
+                raise
+            logger.info("copilot router %r not installed - skipping", name)
+            continue
+        registered.append(name)
+    return registered
+
+
+register_copilot_routers(app)
 
 
 @app.get("/health")

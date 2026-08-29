@@ -1,0 +1,184 @@
+# Golden retrieval set — the ten questions m13's Experiment 3 was measured against.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS FILE IS HERE AND NOT IN docs/
+# ─────────────────────────────────────────────────────────────────────────────
+# It used to live in docs/hybrid-retrieval-plans.md, as a markdown table. That file is
+# part of the retrieval corpus, so the questions were indexed alongside the documents
+# they were meant to test. `websearch_to_tsquery` matches a question against the literal
+# text of that question better than against any document that merely ANSWERS it, so the
+# lexical arm returned the eval document itself for 8 of the 10 questions, and hybrid --
+# the shipped default -- scored WORSE than dense alone on 5 of them, because RRF weights
+# a poisoned arm equally with a good one.
+#
+# `build_corpus.py --docs /app/docs` globs `docs/*.md`. `eval/` is not under `docs/`, so
+# this file is structurally unreachable from the corpus. That is the fix. The deny-list
+# in build_corpus.py is a second line of defence for the day someone points the builder
+# at the repository root; the directory layout is the first.
+#
+# The fix is NOT "stop indexing the design docs". Those documents are in the corpus on
+# purpose -- they are what lets the system answer "how does this platform deduplicate
+# rent contracts?", which no SQL query can produce. Removing them would delete the
+# feature to protect the metric.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# GRADING
+# ─────────────────────────────────────────────────────────────────────────────
+# Relevance is graded per `source_id`, not per chunk. Chunk boundaries move whenever the
+# chunker changes; document identity does not, and a fixture that has to be regenerated
+# after every chunker tweak is a fixture nobody maintains.
+#
+#   3  ideal      the document a knowledgeable human would hand over
+#   2  acceptable answers the question correctly, less directly or less completely
+#   1  related    same subject, does not answer the question
+#   0  decoy      LOOKS retrievable for this query and is wrong. Recorded explicitly,
+#                 because a nearest-neighbour list is judged by what it puts above the
+#                 right answer, not only by whether the right answer appears.
+#
+# `expect_source_type` replaces `relevance` for questions with no single right document:
+# the vague queries exist to test that the area fact sheets are FINDABLE at all, and any
+# plausible area is a pass.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PROVENANCE
+# ─────────────────────────────────────────────────────────────────────────────
+# Nine of these ten are verbatim the questions used in the contaminated run, so the
+# before/after comparison is real. G-08 is not -- see its own note.
+#
+# The grades were assigned by reading the documents, not by recording what the retriever
+# returned. That distinction matters: in the first run "correct" was judged after the
+# fact, and at least one call (G-03) would not survive a rubric written in advance.
+#
+# TWO RESIDUALS ARE LEFT IN THE CORPUS ON PURPOSE. docs/rag-corpus-design.md has a
+# routing table whose examples are near-variants of G-01 and G-07 -- one word apart, so
+# `test_no_golden_question_appears_in_the_corpus` does not catch them, and they are
+# genuine content in a design document that would be worse without examples. They are
+# graded 0 instead of deleted. If the lexical arm ranks that file first for G-01 or G-07,
+# the honest reading is "near-duplicate question text still beats the answer", which is a
+# result worth reporting -- not a leak to patch out of the corpus after the fact.
+
+schema_version: 1
+corpus: doc_chunks
+recorded: 2026-08-29
+questions:
+
+  - id: G-01
+    text: "How are rent contracts deduplicated?"
+    kind: factual
+    relevance:
+      docs/architecture.md: 3        # "Deduplication at Ingestion"; contract_id + line_number
+      docs/concurrent-inserts.md: 1  # ON CONFLICT DO NOTHING as a concurrency property
+      docs/rag-corpus-design.md: 0   # RESIDUAL. Its routing table uses "How does this
+                                     # platform deduplicate rent contracts?" as an
+                                     # ILLUSTRATION. Not a verbatim match, so the
+                                     # isolation test does not catch it, and it is a
+                                     # legitimate line in a design document -- so it
+                                     # stays. If the lexical arm ranks it first, that is
+                                     # a finding to report, not a leak to patch.
+
+  - id: G-02
+    text: "Why is `annual_amount` divided by `no_of_prop`?"
+    kind: factual
+    relevance:
+      docs/changelog.md: 3           # v0.5.0: 208% gross yields, with the row counts
+      docs/rag-corpus-design.md: 2   # states the rule; does not show the evidence
+      docs/data-model.md: 1          # documents the column, not the division
+
+  - id: G-03
+    text: "What does `meter_sale_price` measure?"
+    kind: definitional
+    relevance:
+      docs/data-model.md: 3          # "Price per sqm (null for non-sale transactions)"
+      docs/changelog.md: 1           # appears only as a token-cost example
+      docs/pandas-vs-pyspark.md: 1   # appears only inside an aggregation
+    note: >
+      In the contaminated run the dense arm returned changelog.md and it was scored
+      correct. Against this rubric it is a 1. The rubric was written afterwards there
+      and beforehand here, which is the whole difference between an eval and a demo.
+
+  - id: G-04
+    text: "Why are rents not plotted as a time series?"
+    kind: factual
+    relevance:
+      docs/rag-corpus-design.md: 3   # the registration-snapshot trap, stated in full
+      docs/changelog.md: 2           # same finding, one sentence
+
+  - id: G-05
+    text: "What did the GiST index actually buy?"
+    kind: factual
+    relevance:
+      docs/postgis-query-plans.md: 3      # 2.95 ms indexed vs 2.34 ms sequential
+      docs/polygon-adjacency-plans.md: 1  # a different index on the same table
+      docs/hybrid-retrieval-plans.md: 1   # cites the result as its own hypothesis
+    note: >
+      Two things make this the most informative question in the set.
+
+      One: it is the truncation probe. The answer lives in one of the two chunks that
+      exceed the model's 512-token limit, so the dense arm sees only its first 512 tokens
+      while the lexical arm sees all 838.
+
+      Two: BOTH graded documents are titled "...what the GiST index actually buys". The
+      question is a near-copy of two competing titles, so a purely lexical match has no
+      way to choose between them and picked the wrong one in run 1. This is a hard
+      question by construction, not a leak -- the titles are the real titles of the real
+      documents, and a user asking this would phrase it this way.
+
+  - id: G-06
+    text: "Why `PERCENTILE_CONT` instead of `AVG`?"
+    kind: factual
+    relevance:
+      docs/changelog.md: 3           # the AED 6.75 bn single sale that moves a mean
+      docs/rag-corpus-design.md: 2   # restates it while arguing SQL over RAG
+
+  - id: G-07
+    text: "Which areas border Business Bay?"
+    kind: factual
+    relevance:
+      Business Bay: 3                     # the area fact sheet; source_type=area_sheet
+      docs/polygon-adjacency-plans.md: 1  # how adjacency is computed, not the answer
+      docs/rag-corpus-design.md: 0        # RESIDUAL, same species as G-01's. Its routing
+                                          # table uses "Which communities border Business
+                                          # Bay?" to illustrate a question that should go
+                                          # to PostGIS rather than to RAG. One word apart
+                                          # from this question, and a legitimate line in a
+                                          # design document -- so it stays, graded 0.
+
+  - id: G-08
+    text: "Which waterfront area has the strongest rental market?"
+    kind: vague
+    expect_source_type: area_sheet
+    note: >
+      NOT verbatim from the first run, and the only one that is not. The original --
+      "somewhere waterfront with strong rental demand" -- appears word for word in
+      docs/changelog.md, where it is the illustration of what a fact sheet is FOR. That
+      is a legitimate sentence in a legitimate document, and editing the corpus so the
+      eval can pass is the exact move this milestone exists to refuse. So the question
+      moved instead. G-08's before/after is therefore not comparable; the other nine are.
+
+  - id: G-09
+    text: "What is the N+1 demo showing?"
+    kind: factual
+    relevance:
+      docs/n-plus-one-demo.md: 3     # the captured SQL, selectinload vs N+1
+
+  - id: G-10
+    text: "Why is there no LangChain in this repo?"
+    kind: factual
+    decoys:
+      docs/rag-corpus-design.md: 0        # what the dense arm returns instead
+    relevance:
+      docs/changelog.md: 3                # "No LangChain, no LlamaIndex, no external
+                                          # vector database", with the argument. The ONLY
+                                          # place in docs/ where the string appears.
+    note: >
+      The one question whose first-run result was unreadable rather than wrong. All three
+      arms returned hybrid-retrieval-plans.md and there was no way to tell whether that
+      was retrieval or self-reference.
+
+      GRADE CORRECTED AFTER THE FACT, and the correction is disclosed because it is the
+      same mistake in miniature. This file first graded hybrid-retrieval-plans.md a 2,
+      "makes the same case from the retrieval side". It does not. `grep -n LangChain
+      docs/*.md` returns exactly one line, in changelog.md. The only reason that document
+      ever mentioned LangChain was the eval question itself, sitting in the table -- so
+      the grade was assigned from what the retriever had returned, which is precisely the
+      error the rubric exists to prevent. Removing the question removed the evidence.

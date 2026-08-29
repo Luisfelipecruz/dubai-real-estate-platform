@@ -1,0 +1,6 @@
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+# sentence-transformers pulls torch, transformers, and huggingface-hub. Pinned because
+# a minor bump has changed default pooling behaviour before, and a pooling change
+# silently invalidates every vector already stored in doc_chunks.
+sentence-transformers==3.4.1

@@ -9,3 +9,23 @@ pytest==8.3.4
 pytest-asyncio==0.25.3
 httpx==0.28.1
 alembic==1.14.1
+
+# ── Copilot ─────────────────────────────────────────────────────────────────
+#
+# The whole copilot dependency set lands here in one commit, so the API image is
+# rebuilt once across the five PRs instead of five times.
+#
+# httpx above is reused as the client for the embeddings and voice services -- it was
+# already a test dependency and it is async, which the retrieval path needs.
+#
+# There is deliberately NO langchain and no llamaindex. The retrieval logic in
+# api/services/retrieval.py is ~300 lines of SQL and Python, and a framework would hide
+# exactly the parts worth being able to defend: the fusion arithmetic, the chunk
+# boundaries, the reranker cutoff. There is also no torch: embeddings are a separate
+# service precisely so a ~900 MB dependency stays out of this image.
+#
+# anthropic is the generation-layer client (m14). It is optional at runtime -- with
+# LLM_PROVIDER=local or none it is imported and never called -- but installing it here
+# keeps the image count honest. 1.x is the current major; the SDK's 0.x line has a
+# different client surface.
+anthropic==1.2.0
