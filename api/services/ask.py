@@ -483,7 +483,7 @@ _INSERT_CALL = text("""
         estimated_input_tokens, cost_usd, cost_priced,
         latency_ms, retrieve_ms, repair_attempts,
         answered, confidence, citations_total, citations_ok,
-        grounding_warnings, request_id
+        grounding_warnings, request_id, agent_run_id
     ) VALUES (
         :provider, :model, :endpoint, :query,
         :input_tokens, :output_tokens,
@@ -491,7 +491,7 @@ _INSERT_CALL = text("""
         :estimated_input_tokens, :cost_usd, :cost_priced,
         :latency_ms, :retrieve_ms, :repair_attempts,
         :answered, :confidence, :citations_total, :citations_ok,
-        :grounding_warnings, :request_id
+        :grounding_warnings, :request_id, :agent_run_id
     )
 """)
 
@@ -531,6 +531,12 @@ async def answer(
     provider_name: str | None = None,
     source_type: str | None = None,
     effort: str = "high",
+    # m15. `/ask` when a caller asked directly; `/agent/query` when the agent's
+    # `ask_documents` tool called it. It is written to the llm_calls row so cost and
+    # abstention can be split by ORIGIN -- otherwise a nested call is indistinguishable
+    # from a direct one and /ask/costs silently reports the agent's traffic as its own.
+    endpoint: str = "/ask",
+    agent_run_id: str | None = None,
 ) -> AskResponse:
     """Retrieve, guard, generate, verify, record. Returns a checked answer or a refusal.
 
@@ -635,7 +641,8 @@ async def answer(
         {
             "provider": response.provider,
             "model": response.model,
-            "endpoint": "/ask",
+            "endpoint": endpoint,
+            "agent_run_id": agent_run_id,
             "query": query,
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
