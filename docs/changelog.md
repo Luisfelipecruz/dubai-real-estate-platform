@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.13.0 - The machinery, hidden; the rates, over time (2026-08-30)
+
+Four milestones had a half each, all of them waiting on files that belonged to unmerged
+branches. #31-#36 merged the backlog and every one of those files became ordinary. This
+release is what the halves do once they can reach each other. **44 REST operations - 479
+API tests, 189 frontend tests, ten agent tools.**
+
+### Added
+
+- `GET /agent/stream` -- the same run as `POST /agent/query`, reported as it happens.
+  `step` and `result` events in the shapes `frontend/src/lib/stream.ts` had already been
+  parsing and unit-testing since v0.12.0 with no server on the other end. `done` is always
+  sent, including on failure, because a stream that stops without it is indistinguishable
+  from a network drop.
+- `GET /agent/runs/timeseries`, `GET /agent/health`, `GET /agent/tools/stats` -- rates over
+  time, the two most recent buckets compared with their denominators, and per-tool failure
+  attribution.
+- `dataset_aggregate`, the tenth tool -- dataset-wide totals, medians and extremes. It
+  answered its first live question by routing to itself unprompted and returning 35,577
+  villa transactions, which is the golden value for an eval question that used to be
+  DECLINED.
+- `agent_runs.stop_reason` (migration `0004`) and `agent_tool_calls` (migration `0005`).
+
+### Changed
+
+- **`/copilot` no longer lays the machinery in front of the answer.** The tool trace moved
+  behind a one-click disclosure inside `ConversationTurn`; what replaces it is
+  human-language progress DERIVED from real events -- no timer, no scripted sequence, and
+  nothing to say until something has happened.
+- **`/copilot/runs` is a panel, not a log.** Trends with their sample sizes, four metrics
+  over a selectable window, and per-tool attribution. An interval with no runs shows no
+  rate rather than 0%; a percentile over fewer than 20 runs is not shown at all.
+- `jest.config.ts` counts coverage for `src/components/conversation/` and
+  `src/components/observability/`, which had been tested with their coverage uncounted
+  for two milestones.
+
+### Fixed
+
+- **M-47, the run that gathered everything and said nothing.** 8 of 147 answered runs
+  returned a null answer. It was two bugs, not one, and `finish_reason` separated them --
+  a value the system computed on every run and persisted nowhere. A blank final turn now
+  produces an honest sentence carrying the findings, and the reason lands in the warnings.
+- A `trend()` ordering bug that reported two equal rates over one run and three as `flat`
+  -- a conclusion the sample cannot support. Caught by the milestone's own live invariant.
+
+### Known not to be met
+
+- Plan §12.7 gate 1: the first human-readable status arrives at **10.1 s**, not under two.
+  There is nothing to report until the model has chosen a tool, and on a local 20B that
+  decision is the ten seconds. Measured, not estimated -- see `docs/conversational-surface.md`.
+- Plan §13.6 gate 5: no threshold from `eval/thresholds.yaml` is shown with its live state.
+  It needs `GET /evals/latest`.
+
+
 ## v0.12.0 - The evidence, rendered (2026-08-30)
 
 Four milestones built things that could only be seen from a terminal. m14 checked citations

@@ -6,10 +6,22 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AnswerPanel } from "@/components/copilot/AnswerPanel";
 import { CitationList } from "@/components/copilot/CitationList";
-import { EvidenceTrace } from "@/components/copilot/EvidenceTrace";
 import { RunMeta } from "@/components/copilot/RunMeta";
 import { RunProgress } from "@/components/copilot/RunProgress";
-import { probeStreaming } from "@/lib/stream";
+import { ConversationTurn } from "@/components/conversation/ConversationTurn";
+import {
+  INITIAL_PROGRESS,
+  markIncomplete,
+  progressFromResponse,
+  reduceProgress,
+  type ProgressState,
+} from "@/lib/progress";
+import {
+  probeStreaming,
+  streamAgentRun,
+  StreamIncomplete,
+  type StreamEvent,
+} from "@/lib/stream";
 import {
   CopilotError,
   runAgent,
@@ -42,6 +54,11 @@ export default function CopilotPage() {
   const [agentResult, setAgentResult] = useState<AgentResponse | null>(null);
   const [askResult, setAskResult] = useState<AskResponse | null>(null);
   const [canStream, setCanStream] = useState(false);
+  // m19. The conversational surface is DRIVEN by this and nothing else: `progress` only
+  // ever changes because an event arrived. There is no timer anywhere on this page, which
+  // is the guarantee `progress.ts` was built to make keepable.
+  const [progress, setProgress] = useState<ProgressState>(INITIAL_PROGRESS);
+  const [asked, setAsked] = useState("");
 
   useEffect(() => {
     // Asks the LIVE API whether it can stream, rather than assuming. Today this is false
@@ -58,10 +75,46 @@ export default function CopilotPage() {
     setError(null);
     setAgentResult(null);
     setAskResult(null);
+    setProgress(INITIAL_PROGRESS);
+    setAsked(q);
 
     try {
-      if (route === "agent") setAgentResult(await runAgent(q));
-      else setAskResult(await runAsk(q));
+      if (route === "agent" && canStream) {
+        // The streaming path. Events are reduced into human-language progress as they
+        // arrive; the machinery stays behind the evidence toggle inside ConversationTurn.
+        let state = INITIAL_PROGRESS;
+        const collected: StreamEvent[] = [];
+        try {
+          await streamAgentRun({
+            question: q,
+            onEvent: (event) => {
+              collected.push(event);
+              state = reduceProgress(state, event);
+              setProgress(state);
+            },
+          });
+        } catch (streamErr) {
+          // A body that closed without `done` is NOT a finished run, and saying so is
+          // rule 3. Anything else is a real failure and goes to the error card.
+          if (streamErr instanceof StreamIncomplete) {
+            setProgress(
+              markIncomplete(state, streamErr.message),
+            );
+          } else {
+            throw streamErr;
+          }
+        }
+        // The `done` event carries everything the non-streaming response does except the
+        // per-step trace, which arrived as `step`/`result` events. Fetch the full record
+        // only if the user opens the evidence -- for now the trace comes from the events.
+        setAgentResult(null);
+      } else if (route === "agent") {
+        const result = await runAgent(q);
+        setAgentResult(result);
+        setProgress(progressFromResponse(result));
+      } else {
+        setAskResult(await runAsk(q));
+      }
     } catch (err) {
       // A 503 means the LLM layer is off or unreachable and the remedy is a config
       // change; a 502 means the provider answered with something unusable and the remedy
@@ -137,11 +190,11 @@ export default function CopilotPage() {
         </form>
       </Card>
 
-      {busy && (
-        <RunProgress
-          streaming={canStream}
-          stepsSoFar={agentResult?.steps.length ?? 0}
-        />
+      {/* The `ask` route is a single call with nothing to narrate, so it keeps the
+          spinner. The `agent` route does not: ConversationTurn IS its waiting state, and
+          it says what is happening rather than that something is. */}
+      {busy && route === "ask" && (
+        <RunProgress streaming={false} stepsSoFar={0} />
       )}
 
       {error && (
@@ -167,14 +220,22 @@ export default function CopilotPage() {
         </Card>
       )}
 
+      {/* m19. The conversational surface: the answer, with the machinery one click away
+          rather than laid out in front of it. It renders on BOTH paths -- streaming from
+          live events, and non-streaming from `progressFromResponse`, which derives the
+          same events from a finished response so the two views cannot drift. */}
+      {route === "agent" && (busy || progress.status !== "idle") && (
+        <ConversationTurn
+          question={asked}
+          state={progress}
+          steps={agentResult?.steps ?? []}
+          warnings={progress.groundingWarnings}
+          streamingAvailable={canStream}
+        />
+      )}
+
       {agentResult && (
         <div className="space-y-4">
-          <AnswerPanel
-            outcome={agentResult.outcome}
-            answer={agentResult.answer}
-            categories={agentResult.categories}
-            warnings={agentResult.grounding_warnings}
-          />
           <RunMeta
             provider={agentResult.provider}
             model={agentResult.model}
@@ -193,13 +254,6 @@ export default function CopilotPage() {
               },
             ]}
           />
-          <section className="space-y-2">
-            <h2 className="text-sm font-semibold text-[--foreground]">
-              Tool trace — {agentResult.steps.length} step
-              {agentResult.steps.length === 1 ? "" : "s"}
-            </h2>
-            <EvidenceTrace steps={agentResult.steps} />
-          </section>
         </div>
       )}
 

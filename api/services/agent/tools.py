@@ -1,7 +1,7 @@
 """The tool layer: what the agent can actually do, and how it is told to choose.
 
-WHY NINE TOOLS AND NOT THIRTY-THREE
-------------------------------------
+WHY TEN TOOLS AND NOT THIRTY-THREE
+-----------------------------------
 The platform serves 33 REST operations. Exposing all of them would be the obvious move
 and would be wrong twice. Every tool description is input tokens on EVERY turn of every
 run, so thirty-three descriptions is a standing tax paid whether or not any of them is
@@ -9,7 +9,9 @@ used; and a model choosing between thirty-three near-identical options chooses b
 Operations that differ only by filter parameters collapse into one tool that takes those
 parameters.
 
-Nine tools, in four categories. The category is not decoration -- `eval/golden/routing.yaml`
+Ten tools, in four categories -- nine at m15, plus `dataset_aggregate` at m21, which
+closed M-44's six declined questions with ONE tool rather than six by collapsing them
+into a closed product of filter parameters. The category is not decoration -- `eval/golden/routing.yaml`
 grades a question by which category answered it, so a numeric question served from prose
 is a measurable failure rather than an impression.
 
@@ -47,6 +49,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from services import market, retrieval
+from services.aggregates.tool import REGISTRATION as _AGGREGATE
 from services.llm.base import ToolSpec
 from services.llm.schema import strict_json_schema
 
@@ -616,6 +619,17 @@ TOOLS: tuple[Tool, ...] = (
         category="meta",
         arguments=NoArgs,
         handler=_dataset_overview,
+    ),
+    # m21. Everything this needs -- the argument model, the description, the handler --
+    # lives in services/aggregates/tool.py and was tested there before this line could be
+    # written; `tools.py` belonged to an unmerged milestone at the time. See
+    # docs/dataset-aggregates.md §5.
+    Tool(
+        name=_AGGREGATE["name"],
+        description=_AGGREGATE["description"],
+        category=_AGGREGATE["category"],
+        arguments=_AGGREGATE["arguments"],
+        handler=_AGGREGATE["handler"],
     ),
 )
 

@@ -31,6 +31,12 @@ const config: Config = {
   collectCoverageFrom: [
     "src/lib/**/*.{ts,tsx}",
     "src/components/copilot/**/*.{ts,tsx}",
+    // m19 and m20. These ran their tests with coverage uncounted for two milestones
+    // because this file belonged to an unmerged one -- so the components were tested and
+    // the report said they were not there at all, which is the more misleading of the two
+    // failures.
+    "src/components/conversation/**/*.{ts,tsx}",
+    "src/components/observability/**/*.{ts,tsx}",
   ],
 };
 

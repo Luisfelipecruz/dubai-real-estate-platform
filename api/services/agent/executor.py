@@ -30,6 +30,7 @@ import logging
 import re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import text
@@ -45,6 +46,7 @@ from models.agent import (
 )
 from services.llm import pricing, registry
 from services.llm.base import Exchange, LLMError, LLMResponse, ToolResult
+from services.synthesis.verdict import FinalTurn, Finding, assess
 
 from . import settings, tools
 
@@ -206,19 +208,112 @@ def verify_currency(answer: str, tool_payloads: list[str]) -> list[str]:
     ]
 
 
+# ── the event sink ──────────────────────────────────────────────────────────
+#
+# m19's server half. `GET /agent/stream` passes a callback; `POST /agent/query` passes
+# nothing and the whole mechanism costs one `is None` check per step.
+#
+# THE CONTRACT IS THE CLIENT'S, NOT THIS FILE'S. `frontend/src/lib/stream.ts` was written
+# and tested first and defines the event names and payload keys exactly: `step` carries
+# {step, tool, category, arguments}, `result` carries {step, tool, ok, took_ms, cost_usd,
+# result}. This emits those shapes because the parser already exists; inventing a second
+# shape here would mean two contracts and one of them wrong.
+#
+# `done` and `error` are emitted by the ROUTER, not here, because they are built from the
+# finished AgentResponse this function returns.
+
+EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+
+async def _emit(sink: EventSink | None, name: str, payload: dict[str, Any]) -> None:
+    """Send one event, and never let the listener kill the run.
+
+    A browser that navigates away mid-run closes the response body, and the next write
+    raises. That must not abort a 60-second run that is still going to write its
+    agent_runs row -- the run is the product, the stream is a view of it. So this swallows
+    everything and logs, which is the same judgement `_record_turn` makes about a failed
+    accounting insert.
+    """
+    if sink is None:
+        return
+    try:
+        await sink(name, payload)
+    except Exception:  # noqa: BLE001 - a dead listener is not a run failure
+        logger.warning("event sink failed on %r; the run continues", name, exc_info=True)
+
+
 # ── accounting ──────────────────────────────────────────────────────────────
 
 _INSERT_RUN = text("""
     INSERT INTO agent_runs (
         id, provider, model, question, answer, outcome, steps, tool_calls, tool_errors,
         categories, total_cost_usd, cost_priced, input_tokens, output_tokens,
-        latency_ms, tool_ms, unverified_numbers
+        latency_ms, tool_ms, unverified_numbers, stop_reason
     ) VALUES (
         :id, :provider, :model, :question, :answer, :outcome, :steps, :tool_calls,
         :tool_errors, :categories, :total_cost_usd, :cost_priced, :input_tokens,
-        :output_tokens, :latency_ms, :tool_ms, :unverified_numbers
+        :output_tokens, :latency_ms, :tool_ms, :unverified_numbers, :stop_reason
     )
 """)
+
+_INSERT_TOOL_CALL = text("""
+    INSERT INTO agent_tool_calls (
+        agent_run_id, step, tool_name, category, arguments, ok, error,
+        duration_ms, repeated
+    ) VALUES (
+        :agent_run_id, :step, :tool_name, :category, CAST(:arguments AS JSONB), :ok,
+        :error, :duration_ms, :repeated
+    )
+""")
+
+
+async def _record_tool_calls(
+    conn: AsyncConnection, run_id: str, invocations: list[ToolInvocation]
+) -> None:
+    """One row per tool call. m20's producer, and the reason migration 0005 exists.
+
+    THE RESULT IS NOT STORED, deliberately -- the migration header gives the reasoning. On
+    a failure the result text IS the error message, so `error` carries it and only then;
+    a successful call's payload can be 6,000 characters and answers no question the panel
+    asks.
+
+    Tolerant of the table being absent, the same way `_record_turn` is tolerant of a
+    failed insert. A checkout that has not run `alembic upgrade head` still answers
+    questions; it just cannot attribute tool failures, and
+    `observability.tool_error_attribution` already reports exactly that state rather than
+    rendering an empty chart.
+    """
+    if not invocations:
+        return
+    try:
+        await conn.execute(
+            _INSERT_TOOL_CALL,
+            [
+                {
+                    "agent_run_id": run_id,
+                    "step": i.step,
+                    "tool_name": i.name,
+                    "category": i.category,
+                    "arguments": json.dumps(i.arguments, default=str),
+                    "ok": i.ok,
+                    # The model reads this text when a tool declines, so it is the most
+                    # useful thing to keep -- and it is bounded, unlike a success payload.
+                    "error": None if i.ok else i.result[:2000],
+                    "duration_ms": i.duration_ms,
+                    "repeated": i.repeated,
+                }
+                for i in invocations
+            ],
+        )
+        await conn.commit()
+    except SQLAlchemyError:
+        logger.error(
+            "could not record agent_tool_calls for run %s -- the run continues; "
+            "per-tool attribution for THIS run is lost. Has migration 0005 been applied?",
+            run_id,
+            exc_info=True,
+        )
+
 
 _INSERT_TURN = text("""
     INSERT INTO llm_calls (
@@ -395,6 +490,7 @@ async def run(
     *,
     provider_name: str | None = None,
     max_steps: int | None = None,
+    on_event: EventSink | None = None,
 ) -> AgentResponse:
     """Answer a question by planning over tools. Raises LLMError if the provider fails.
 
@@ -415,6 +511,7 @@ async def run(
     steps: list[AgentStep] = []
     seen: dict[tuple[str, str], str] = {}
     tool_payloads: list[str] = []
+    all_invocations: list[ToolInvocation] = []
     categories: list[str] = []
     generate_ms = tool_ms = 0
     tool_calls = tool_errors = 0
@@ -422,6 +519,7 @@ async def run(
     total_cost = 0.0
     any_priced = False
     outcome = "failed"
+    final_stop_reason: str | None = None
     answer_text: str | None = None
     warnings: list[str] = []
 
@@ -491,9 +589,48 @@ async def run(
 
         if not response.wants_tools:
             steps.append(record)
-            answer_text = response.text or None
+            # M-47. `response.text or None` is where the blank answer used to be born:
+            # a turn that spent its whole budget in the reasoning channel, or stopped
+            # after fourteen tokens, arrived here indistinguishable from a real answer
+            # and was recorded as `answered` with a NULL body. `assess` separates the two
+            # causes on `stop_reason` and substitutes an honest sentence carrying the
+            # findings. See docs/empty-answers.md.
+            verdict = assess(
+                FinalTurn(
+                    text=response.text,
+                    output_tokens=response.usage.output_tokens,
+                    max_output_tokens=settings.AGENT_MAX_OUTPUT_TOKENS,
+                    stop_reason=response.stop_reason,
+                    reasoning_chars=len((response.raw or {}).get("reasoning") or ""),
+                ),
+                findings=[
+                    Finding(tool=i.name, category=i.category, ok=i.ok)
+                    for i in all_invocations
+                ],
+            )
+            answer_text = verdict.answer
+            if not verdict.is_answer:
+                logger.warning(
+                    "run %s produced no answer: %s", run_id, verdict.explanation
+                )
+                warnings.append(verdict.explanation)
             outcome = "answered"
+            final_stop_reason = response.stop_reason
             break
+
+        for call in response.tool_calls:
+            await _emit(
+                on_event,
+                "step",
+                {
+                    "step": step,
+                    "tool": call.name,
+                    "category": tools.BY_NAME[call.name].category
+                    if call.name in tools.BY_NAME
+                    else "meta",
+                    "arguments": call.arguments,
+                },
+            )
 
         results, invocations, elapsed = await _execute_calls(
             conn, response, seen, step, run_id=run_id
@@ -501,6 +638,27 @@ async def run(
         tool_ms += elapsed
         record.tool_calls = invocations
         steps.append(record)
+        all_invocations.extend(invocations)
+        await _record_tool_calls(conn, run_id, invocations)
+
+        for invocation in invocations:
+            await _emit(
+                on_event,
+                "result",
+                {
+                    "step": invocation.step,
+                    "tool": invocation.name,
+                    "ok": invocation.ok,
+                    "took_ms": invocation.duration_ms,
+                    # NULL, not the turn's cost. A tool call has no separately
+                    # attributable price -- the money went on the generation that chose
+                    # it -- and copying `cost` here would report the same figure once per
+                    # call in a three-call turn. Same refusal to divide that
+                    # `_execute_calls` already makes about elapsed time.
+                    "cost_usd": None,
+                    "result": invocation.result,
+                },
+            )
         for invocation in invocations:
             tool_calls += 1
             if not invocation.ok:
@@ -541,7 +699,7 @@ async def run(
     await _finalise(
         conn, run_id, provider, question, answer_text, outcome, steps, tool_calls,
         tool_errors, categories, total_cost, any_priced, input_tokens, output_tokens,
-        started, tool_ms, unverified,
+        started, tool_ms, unverified, final_stop_reason,
     )
 
     return AgentResponse(
@@ -629,7 +787,7 @@ def _reads_as_refusal(answer: str) -> bool:
 async def _finalise(
     conn, run_id, provider, question, answer, outcome, steps, tool_calls, tool_errors,
     categories, total_cost, any_priced, input_tokens, output_tokens, started, tool_ms,
-    unverified,
+    unverified, stop_reason=None,
 ) -> None:
     try:
         await conn.execute(
@@ -652,6 +810,9 @@ async def _finalise(
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "tool_ms": tool_ms,
                 "unverified_numbers": unverified,
+                # M-84's discriminator, now persisted. NULL means "recorded before
+                # migration 0004", which is distinguishable from every real finish reason.
+                "stop_reason": stop_reason,
             },
         )
         await conn.commit()

@@ -38,14 +38,22 @@ class ScriptedProvider:
         return self._turns.pop(0)
 
 
-def turn(text=None, calls=(), latency=10):
+def turn(text=None, calls=(), latency=10, stop_reason=None, output_tokens=20,
+         reasoning=None):
+    """One scripted provider turn.
+
+    `stop_reason`, `output_tokens` and `reasoning` were added when m22's salvage landed:
+    the two blank-answer causes are distinguished by exactly those fields, so a test that
+    could not set them could not exercise either branch.
+    """
     return LLMResponse(
         text=text or "",
-        usage=Usage(input_tokens=100, output_tokens=20),
+        usage=Usage(input_tokens=100, output_tokens=output_tokens),
         provider="scripted",
         model="scripted-model",
         latency_ms=latency,
-        stop_reason="tool_calls" if calls else "stop",
+        stop_reason=stop_reason or ("tool_calls" if calls else "stop"),
+        raw={"reasoning": reasoning} if reasoning else {},
         tool_calls=tuple(calls),
     )
 
@@ -56,11 +64,17 @@ def call(name, **arguments):
 
 @pytest.fixture
 def scripted(monkeypatch):
-    """Install a scripted provider and neuter both accounting writes.
+    """Install a scripted provider and neuter every accounting write.
 
-    The database is stubbed rather than mocked away entirely: `_record_turn` and
-    `_finalise` are the two places the loop touches Postgres, and replacing exactly those
-    keeps every other line of the executor real.
+    The database is stubbed rather than mocked away entirely: `_record_turn`,
+    `_finalise` and `_record_tool_calls` are the three places the loop touches Postgres,
+    and replacing exactly those keeps every other line of the executor real.
+
+    `_record_tool_calls` joined the list when m20's producer landed. It is stubbed with a
+    RECORDER rather than a no-op, so `scripted.tool_call_rows` can assert that the
+    producer was actually called with the right invocations -- a stub that silently
+    swallowed them would let the producer rot untested, which is the failure this
+    repository has already shipped twice.
     """
     def _install(turns):
         provider = ScriptedProvider(turns)
@@ -69,8 +83,15 @@ def scripted(monkeypatch):
         async def _noop(*args, **kwargs):
             return None
 
+        recorded: list[tuple[str, list]] = []
+
+        async def _record(conn, run_id, invocations):
+            recorded.append((run_id, list(invocations)))
+
         monkeypatch.setattr(executor, "_record_turn", _noop)
         monkeypatch.setattr(executor, "_finalise", _noop)
+        monkeypatch.setattr(executor, "_record_tool_calls", _record)
+        provider.tool_call_rows = recorded
         return provider
 
     return _install
@@ -245,6 +266,9 @@ async def test_a_provider_failure_mid_run_keeps_the_completed_steps(scripted, mo
 
     monkeypatch.setattr(executor, "_record_turn", _noop)
     monkeypatch.setattr(executor, "_finalise", _noop)
+    # This test builds its own provider instead of calling the `scripted` factory, so it
+    # has to neuter the third accounting write itself.
+    monkeypatch.setattr(executor, "_record_tool_calls", _noop)
 
     response = await executor.run(None, "which is busiest?")
     assert response.outcome == "failed"
@@ -355,3 +379,153 @@ def test_a_space_before_a_non_thousands_group_is_still_two_numbers():
     "12 areas 34 rows" into 1234 and invent a number nobody wrote."""
     warnings = executor.verify_numbers("There are 12 areas and 34 rows.", ["{}"])
     assert len(warnings) == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WHAT m19, m20 AND m22 ADDED TO THE LOOP
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Three milestones' server halves land in the same file, so they are tested in the same
+# place: the per-step event sink (m19), the per-call producer (m20), and the empty-answer
+# salvage (m22). All three were built and tested in isolation months of session-time
+# before the loop could call them; these are the tests that prove the loop actually does.
+
+
+@pytest.mark.asyncio
+async def test_the_producer_receives_every_invocation(scripted, monkeypatch):
+    """m20. The 213 runs before this had `tool_calls: 31 errors` and no way to say WHICH
+    tool failed, because the per-call records were built, returned, rendered once and
+    dropped. This asserts they now reach the writer."""
+    async def _ok(conn, name, arguments, run_id=None):
+        return '{"transactions": 11390}', False
+
+    monkeypatch.setattr(executor.tools, "run", _ok)
+    provider = scripted([
+        turn(calls=[call("area_summary", area_names=["Business Bay"]),
+                    call("list_areas", limit=5)]),
+        turn(text="Business Bay leads."),
+    ])
+
+    response = await executor.run(None, "which is busiest?")
+
+    assert response.outcome == "answered"
+    assert len(provider.tool_call_rows) == 1, "one write per turn that called tools"
+    run_id, invocations = provider.tool_call_rows[0]
+    assert run_id == response.run_id
+    assert [i.name for i in invocations] == ["area_summary", "list_areas"]
+    assert all(i.duration_ms >= 0 for i in invocations)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_with_no_tools_writes_no_tool_call_rows(scripted, monkeypatch):
+    """A refusal on the first turn calls nothing, and an empty INSERT is not a row of
+    zeroes -- it is no rows."""
+    scripted([turn(text="I don't have data on Riyadh.")])
+    provider = executor.registry.get_provider()
+    response = await executor.run(None, "how many sales in Riyadh?")
+    assert response.outcome == "refused"
+    assert provider.tool_call_rows == []
+
+
+@pytest.mark.asyncio
+async def test_a_blank_final_turn_is_no_longer_a_null_answer(scripted, monkeypatch):
+    """m22, and this is M-47 fixed at the point it was born.
+
+    A final turn that produced nothing used to become `answer=None` with
+    `outcome='answered'` -- a blank screen after 60 seconds. It now carries an honest
+    sentence naming what was gathered, and the reason lands in the warnings.
+    """
+    async def _ok(conn, name, arguments, run_id=None):
+        return '{"transactions": 11390}', False
+
+    monkeypatch.setattr(executor.tools, "run", _ok)
+    scripted([
+        turn(calls=[call("area_summary", area_names=["Business Bay"])]),
+        turn(text=""),          # the shape group B produces: nothing at all
+    ])
+
+    response = await executor.run(None, "which is busiest?")
+
+    assert response.answer, "the whole point: never None again"
+    assert "could not write the summary" in response.answer
+    assert "area_summary" in response.answer, "the findings are attached"
+    assert any("no answer text" in w for w in response.grounding_warnings)
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_final_turn_says_it_ran_out_of_room(scripted, monkeypatch):
+    """The other half of M-47, and it must not read like the first."""
+    async def _ok(conn, name, arguments, run_id=None):
+        return '{"transactions": 11390}', False
+
+    monkeypatch.setattr(executor.tools, "run", _ok)
+    scripted([
+        turn(calls=[call("area_summary", area_names=["Business Bay"])]),
+        turn(text="", stop_reason="length",
+             output_tokens=executor.settings.AGENT_MAX_OUTPUT_TOKENS),
+    ])
+
+    response = await executor.run(None, "which grew fastest?")
+    assert "ran out of room" in response.answer
+
+
+@pytest.mark.asyncio
+async def test_a_real_answer_is_left_exactly_alone(scripted, monkeypatch):
+    """The salvage path must be invisible when there is nothing to salvage."""
+    scripted([turn(text="Business Bay recorded 11,390 sales.")])
+    response = await executor.run(None, "how many?")
+    assert response.answer == "Business Bay recorded 11,390 sales."
+
+
+@pytest.mark.asyncio
+async def test_the_event_sink_emits_the_shapes_the_client_already_parses(
+    scripted, monkeypatch
+):
+    """m19. `frontend/src/lib/stream.ts` was written and tested first; these key names
+    are its contract, not this file's invention."""
+    async def _ok(conn, name, arguments, run_id=None):
+        return '{"transactions": 11390}', False
+
+    monkeypatch.setattr(executor.tools, "run", _ok)
+    scripted([
+        turn(calls=[call("area_summary", area_names=["Business Bay"])]),
+        turn(text="Business Bay leads."),
+    ])
+
+    events: list[tuple[str, dict]] = []
+
+    async def sink(name, payload):
+        events.append((name, payload))
+
+    await executor.run(None, "which is busiest?", on_event=sink)
+
+    names = [n for n, _ in events]
+    assert names == ["step", "result"], "one of each, in order, for a one-tool run"
+    step = dict(events[0][1])
+    assert set(step) == {"step", "tool", "category", "arguments"}
+    assert step["tool"] == "area_summary"
+    result = dict(events[1][1])
+    assert set(result) == {"step", "tool", "ok", "took_ms", "cost_usd", "result"}
+    assert result["ok"] is True
+    assert result["cost_usd"] is None, "a tool call has no attributable price"
+
+
+@pytest.mark.asyncio
+async def test_a_dead_listener_does_not_kill_the_run(scripted, monkeypatch):
+    """A browser that navigates away closes the body and the next write raises. The run
+    is the product; the stream is a view of it."""
+    async def _ok(conn, name, arguments, run_id=None):
+        return '{"transactions": 11390}', False
+
+    monkeypatch.setattr(executor.tools, "run", _ok)
+    scripted([
+        turn(calls=[call("area_summary", area_names=["Business Bay"])]),
+        turn(text="Business Bay leads."),
+    ])
+
+    async def broken(name, payload):
+        raise ConnectionResetError("client went away")
+
+    response = await executor.run(None, "which is busiest?", on_event=broken)
+    assert response.outcome == "answered"
+    assert response.answer == "Business Bay leads."
