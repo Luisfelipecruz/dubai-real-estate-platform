@@ -1,0 +1,114 @@
+{
+  "query": "What does the corpus say about how the hybrid retrieval ranking works?",
+  "provider": "local",
+  "model": "gpt-oss:20b",
+  "answered": true,
+  "answer": "The corpus explains that hybrid retrieval combines the dense and lexical arms by applying Reciprocal Rank Fusion (RRF) over the ranks of each arm, using a fixed parameter k = 60 so that no calibration or scale‑tuning is required.  RRF consumes only ranks, avoiding the need to normalise the cosine similarity of the dense arm against the unbounded relevance mass of the lexical arm.  In practice, however, the hybrid mode never outperformed the dense‑only mode on any recall metric, and the lexical arm often returned no results for half of the test questions because the strict AND‑conjoined tsquery eliminated all matches.  Consequently, the API defaults to dense‑only and disables reranking by default.\n",
+  "unanswerable_reason": "",
+  "confidence": "high",
+  "citations": [
+    {
+      "chunk_id": 586,
+      "quote": "RRF over score normalisation, deliberately. Cosine similarity lives in [0, 1]; `ts_rank_cd` is an unbounded relevance mass. Any weighted blend of the two needs a constant that has to be re‑tuned whenever either side changes, and that constant is invisible in the output. RRF consumes only ranks: one parameter, no calibration, no scale to drift. `k = 60` is the value from Cormack et al. (2009), inherited as a starting point and measured in m16 rather than taken on faith.",
+      "resolved": true,
+      "quote_found": true,
+      "source_type": "doc",
+      "source_id": "docs/rag-corpus-design.md",
+      "heading_path": "rag-corpus-design.md > The retrieval corpus — what goes in it, and what must never go in it > 6. Storage and hybrid retrieval"
+    },
+    {
+      "chunk_id": 826,
+      "quote": "`GET /search` now defaults to `mode=dense`, was `mode=hybrid`. Hybrid never beat dense at any k, in any configuration, and there is no question in the set where the lexical arm supplied a correct document dense had missed.",
+      "resolved": true,
+      "quote_found": true,
+      "source_type": "doc",
+      "source_id": "docs/changelog.md",
+      "heading_path": "changelog.md > v0.7.0 - Hybrid retrieval over a generated corpus (2026-08-29) > Was known bad, now fixed -- and it changed two defaults"
+    },
+    {
+      "chunk_id": 815,
+      "quote": "The lexical arm returned nothing at all for 5 of the 10 questions, and this was completely invisible in run 1. `websearch_to_tsquery` conjoins its terms: ... A chunk missing any single stem is excluded. Measured against the corpus directly, the strict query matched 0 chunks for G-06 through G-10 and 1–3 chunks for most of the rest.",
+      "resolved": true,
+      "quote_found": true,
+      "source_type": "doc",
+      "source_id": "docs/hybrid-retrieval-plans.md",
+      "heading_path": "hybrid-retrieval-plans.md > Hybrid retrieval query plans — does HNSW earn its place at this corpus size? > Experiment 3 — the three retrieval modes > What the clean run says"
+    }
+  ],
+  "grounding_warnings": [],
+  "contexts": [
+    {
+      "chunk_id": 819,
+      "source_type": "doc",
+      "source_id": "docs/hybrid-retrieval-plans.md",
+      "heading_path": "hybrid-retrieval-plans.md > Hybrid retrieval query plans — does HNSW earn its place at this corpus size? > Experiment 3 — the three retrieval modes > What the cross-encoder does to ranking",
+      "content": "documents, the reranker scores the relevant one **0.2574** and the two irrelevant ones **0.0000374** — correct, and correctly ordered. The model works. It is being asked the wrong question.\n\nWhat it actually promotes is the tell. For G-01 and G-07 the top-ranked chunk becomes\n`rag-corpus-design.md ›\n… [982 more characters truncated for the fixture]",
+      "token_count": 366,
+      "cosine_similarity": 0.8489868820921384,
+      "echoes_question": false
+    },
+    {
+      "chunk_id": 815,
+      "source_type": "doc",
+      "source_id": "docs/hybrid-retrieval-plans.md",
+      "heading_path": "hybrid-retrieval-plans.md > Hybrid retrieval query plans — does HNSW earn its place at this corpus size? > Experiment 3 — the three retrieval modes > What the clean run says",
+      "content": "**1. Hybrid never beat dense — at any k, in any configuration.** It ties at recall@5 and\nrecall@10 and loses one position at k=1 (G-05, where the fused lexical ranking pushes the\ncorrect document from rank 1 to rank 3). There is no question in the set where the lexical\narm supplied a correct documen\n… [1268 more characters truncated for the fixture]",
+      "token_count": 433,
+      "cosine_similarity": 0.8397134137495322,
+      "echoes_question": false
+    },
+    {
+      "chunk_id": 586,
+      "source_type": "doc",
+      "source_id": "docs/rag-corpus-design.md",
+      "heading_path": "rag-corpus-design.md > The retrieval corpus — what goes in it, and what must never go in it > 6. Storage and hybrid retrieval",
+      "content": "rather than mean, which is exactly the class of string a semantic embedding smears together. 3. **Fusion** — Reciprocal Rank Fusion, `score = Σ 1/(k + rank_i)`, `k = 60`.\n\nRRF over score normalisation, deliberately. Cosine similarity lives in [0, 1];\n`ts_rank_cd` is an unbounded relevance mass. Any \n… [345 more characters truncated for the fixture]",
+      "token_count": 207,
+      "cosine_similarity": 0.8384859946999562,
+      "echoes_question": false
+    },
+    {
+      "chunk_id": 826,
+      "source_type": "doc",
+      "source_id": "docs/changelog.md",
+      "heading_path": "changelog.md > v0.7.0 - Hybrid retrieval over a generated corpus (2026-08-29) > Was known bad, now fixed -- and it changed two defaults",
+      "content": "ms** | | hybrid, no rerank | 7/10 | 9/10 | 67 ms | | dense, rerank | 3/10 | 6/10 | 2,944 ms | | lexical, no rerank | 3/10 | 7/10 | 67 ms |\n\n- **`GET /search` now defaults to `mode=dense`, was `mode=hybrid`.** Hybrid never beat\n  dense at any k, in any configuration, and there is no question in the s\n… [1378 more characters truncated for the fixture]",
+      "token_count": 490,
+      "cosine_similarity": 0.8369552340845647,
+      "echoes_question": false
+    },
+    {
+      "chunk_id": 587,
+      "source_type": "doc",
+      "source_id": "docs/rag-corpus-design.md",
+      "heading_path": "rag-corpus-design.md > The retrieval corpus — what goes in it, and what must never go in it > 6. Storage and hybrid retrieval > Reranking",
+      "content": "`BAAI/bge-reranker-base`, a cross-encoder, over the fused candidates, returning 5.\n\nA bi-encoder embeds query and document independently, so it can never model interaction\nbetween them — which is also what makes it indexable. A cross-encoder reads both\ntogether and is far more accurate, and far too \n… [395 more characters truncated for the fixture]",
+      "token_count": 212,
+      "cosine_similarity": 0.8326266111207122,
+      "echoes_question": false
+    }
+  ],
+  "retrieval": {
+    "mode": "dense",
+    "reranked": false,
+    "k": 5,
+    "candidates_considered": 20,
+    "lexical_relaxed": false
+  },
+  "usage": {
+    "input_tokens": 2480,
+    "output_tokens": 445,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "estimated_input_tokens": 2832,
+    "cost_usd": 0.0,
+    "cost_priced": true,
+    "repair_attempts": 0
+  },
+  "timings_ms": {
+    "retrieve": 277,
+    "generate": 21732,
+    "total": 22012
+  },
+  "request_id": "chatcmpl-609"
+}

@@ -1,5 +1,83 @@
 # Changelog
 
+## v0.12.0 - The evidence, rendered (2026-08-30)
+
+Four milestones built things that could only be seen from a terminal. m14 checked citations
+against the chunks they claim to quote, m15 recorded a step-by-step trace with per-step
+cost, m16 graded three golden fixtures, and m17 shipped a WebSocket transport **with no
+client on the other end.** This is the interface, and the differentiator is not the answer:
+every RAG demo renders a paragraph. **40 REST operations - 340 API tests, and 84 frontend
+tests where there were none.**
+
+### Added
+
+- `/copilot` -- one question, a route toggle between `ask` and `agent`, the answer, and the
+  evidence underneath it. Citations badged verified/unverified, grounding warnings shown
+  rather than hidden, the per-step tool trace with arguments, raw result, latency and cost,
+  routing categories as chips.
+- `/copilot/runs` -- refusal rate, cap rate, tool error rate, unverified numbers, p50/p95
+  and cost over `agent_runs`, with the recent runs beneath them.
+- `/evals` -- the voice budget with its per-stage verdict and the tool catalogue as the
+  model receives it.
+- `frontend/src/lib/stream.ts` -- the SSE client for `GET /agent/stream`: incremental frame
+  parser, typed event decoding, termination detection, and a capability probe against the
+  live API's own OpenAPI schema.
+- `frontend/src/lib/copilot.ts` -- typed fetchers for `/agent/query`, `/ask`, `/agent/runs`
+  and `/agent/tools`, and a `CopilotError` that keeps the status code, because 503 (the LLM
+  layer is off) and 502 (the provider returned something unusable) need different responses
+  and `apiFetch` collapses both into a bare `Error`.
+- **Jest and React Testing Library, which the frontend did not have.** No Jest, no RTL,
+  nothing in `devDependencies`, while the root `CLAUDE.md` requires both. 84 tests across 8
+  suites.
+- `frontend/src/lib/__fixtures__/` -- four unedited captures from the live stack: all four
+  agent outcomes plus an `/ask` answer with three verified citations.
+- `docs/copilot-ui.md`.
+
+### Measured
+
+- **A live agent run took 65,956 ms.** M-48 records the range as 1.4-58.6 s. The ceiling
+  was not a ceiling.
+- **M-47 reproduced on the FIRST question put to the live agent.** Six tool calls across
+  seven steps, routed correctly through `meta -> geo -> sql`, and
+  `{"outcome": "answered", "answered": true, "answer": null}`.
+- **10.3% of all tool calls in this deployment have failed** (31 of 301, over 213 recorded
+  runs), and the refusal rate is 30.0%. Both are now on a page rather than in a query.
+
+### Fixed
+
+- **`categories` has two different types on two endpoints, and one of them has no response
+  model.** `/agent/query` returns `["meta","geo","sql"]`; `/agent/runs` returns raw rows
+  where the column is a `VARCHAR(128)` holding `"meta,geo,sql"`, null for a run that called
+  no tools. A frontend written from `api/models/agent.py` calls `.map()` on a string on
+  every row and throws on the refused one. Absorbed in `parseCategories()`; the real fix is
+  a response model on `/agent/runs` and it belongs to a file this release does not own.
+- **The request field is `q`, not `question`.** The plan's prose says "question"
+  throughout; `AgentRequest` and `AskRequest` both declare `q`, so a frontend written from
+  the plan gets a 422 on every call. Two tests now pin it.
+
+### Not in this release
+
+- **`GET /agent/stream`, and the reason is worth recording.** The plan makes SSE step 1,
+  ahead of any React. It is blocked in three independent places: the endpoint belongs in
+  `api/routers/agent.py` and the per-step hook in `api/services/agent/executor.py`, both
+  claimed by m15's uncommitted manifest -- and the obvious workaround, a new router module
+  registered by editing `COPILOT_ROUTERS`, is closed by
+  `test_registration_list_is_the_full_planned_set`, a test written four milestones ago to
+  notice exactly that move, in a file m17 claims. The guard fired on the case it was
+  written for, against its own author.
+
+  So the work was split at the seam that already existed: **the client half of streaming is
+  built and tested in full**, and the server half is the first task of the session after
+  #30-#32 are committed.
+- **A typewriter animation over the non-streaming response.** It would look like streaming
+  and would be a lie about latency. The page states the degradation in words instead, and
+  `probeStreaming()` flips it automatically when the endpoint ships.
+- **The golden fixtures on `/evals`.** The API exposes 36 operations and not one returns an
+  eval result -- the fixtures are graded by `make eval-*`, which writes to a terminal. The
+  page prints the commands rather than transcribing 74 graded questions into TypeScript,
+  where they would look authoritative and go stale the next time a grader changes. **An
+  eval harness with no API is invisible to everything except the person who runs make.**
+
 ## v0.11.0 - The 800 ms budget, measured (2026-08-30)
 
 A complete spoken turn takes **3.0-3.3 seconds to first audio against an 800 ms budget** --

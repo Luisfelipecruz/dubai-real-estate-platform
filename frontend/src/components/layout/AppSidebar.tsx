@@ -15,6 +15,9 @@ import {
   ChevronLeft,
   ChevronRight,
   X,
+  Sparkles,
+  ListChecks,
+  FlaskConical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -28,6 +31,12 @@ const NAV_ITEMS = [
   { href: "/areas", label: "Areas", icon: MapPin, exact: false },
   { href: "/map", label: "Map", icon: Map, exact: false },
   { href: "/upload", label: "Upload", icon: Upload, exact: false },
+  // The copilot pages. `/copilot` is marked exact so that opening `/copilot/runs` does
+  // not light up both entries — every other route in this list is a single page, so the
+  // prefix match they share has never had to distinguish a parent from a child.
+  { href: "/copilot", label: "Copilot", icon: Sparkles, exact: true },
+  { href: "/copilot/runs", label: "Runs", icon: ListChecks, exact: false },
+  { href: "/evals", label: "Evaluation", icon: FlaskConical, exact: false },
 ];
 
 interface AppSidebarProps {
