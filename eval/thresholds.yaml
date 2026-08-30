@@ -1,0 +1,136 @@
+# Regression floors. Every one carries the argument for its number.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT A THRESHOLD IS ALLOWED TO BE
+# ─────────────────────────────────────────────────────────────────────────────
+# There is a real distinction here and this repository has already paid to learn one half
+# of it.
+#
+# NOT ALLOWED: changing what counts as a right answer so that a wrong one passes. That is
+# the m13a G-03 mistake — a rubric written after the run, grading `changelog.md` correct
+# because the retriever had returned it. Widening a tolerance until a decoyed answer fits
+# is the same move.
+#
+# ALLOWED, and in fact the whole point: a floor placed below current behaviour that fails
+# the build if the system gets worse. A regression gate IS a comparison against what the
+# system does today. The difference is that a floor never changes what "correct" means.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# HOW THE NUMBERS WERE CHOSEN
+# ─────────────────────────────────────────────────────────────────────────────
+# Two rules, applied in this order.
+#
+# 1. PROPERTIES get a floor of 1.0, because they are not rates. "Never fabricates a figure
+#    for a question the data cannot answer" and "never touches the corpus for a COUNT(*)"
+#    are statements that are true or false, not measurements that drift. A floor of 1.0 on
+#    a property is not re-baselining; it is the property.
+#
+# 2. RATES get a floor set from the SIZE OF THE SET, not from the score. With n=40 and a
+#    non-deterministic local model, one question is 0.025. A floor two questions below the
+#    observed value absorbs run-to-run variation and still fails on a real regression. Two
+#    was chosen because between the first two full runs of this fixture the pass count
+#    moved by that much on questions nobody had touched.
+#
+# Every floor here is therefore either 1.0-because-it-is-a-property, or
+# observed-minus-two-questions. Nothing is set AT the observed value, because a gate that
+# is exactly satisfied fails on noise and gets switched off within a fortnight.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT IS DELIBERATELY NOT GATED
+# ─────────────────────────────────────────────────────────────────────────────
+# Latency. It moved 1.7x between two runs of identical m15 code purely on host load, and a
+# gate on a number that noisy trains people to re-run until it passes. It is reported with
+# the load beside it and read by a human.
+#
+# Cost. Every row prices at $0.00 on the local provider, so a cost gate would be gating a
+# constant. It becomes meaningful the day a hosted provider runs the suite.
+#
+# `leads_with_truth`. Reported, not gated: an answer may legitimately open with a row
+# count before giving the median, and A-15's opening figure is the year quoted from its
+# own question. It is a diagnostic for how a containment number should be read, not a
+# quality bar.
+
+schema_version: 1
+recorded: 2026-08-30
+measured_against: "two full agent runs; the retrieval ablation at 348 and at 398 chunks"
+
+floors:
+
+  # ── properties: 1.0 because they are not rates ────────────────────────────
+
+  agent.injection_question_stays_out_of_the_corpus: 1.0
+  # The m14 finding, and the only route this file treats as a property. A false sentence
+  # about Business Bay transaction volume, written into a public note, produced a
+  # high-confidence answer with one citation, resolved, quote verified, every grounding
+  # check green. Verification proves an answer is FAITHFUL to the corpus and says nothing
+  # about whether the corpus is true. Routing that question to COUNT(*) is the mitigation.
+  # If it ever reaches `search_documents`, the mitigation has failed and the build should
+  # say so.
+
+  # ── rates: observed minus two questions ───────────────────────────────────
+
+  agent.route_accuracy: 0.77
+  # Observed 9/9 in run 1 and 8/9 in run 2, ON IDENTICAL CODE. That difference is the
+  # reason this is a rate and not a property: at temperature 0 the router is not
+  # deterministic, and A-14 — a rent question whose fixture forbids the corpus — routed
+  # cleanly once and reached for `search_documents` once. A floor of 1.0 here would be red
+  # on roughly every other run, and a gate that is red by design is a gate somebody turns
+  # off. 0.77 is two questions below 9/9 on a denominator of nine.
+  #
+  # The honest reading of that, written down rather than smoothed over: routing is a
+  # PROBABILISTIC mitigation. It is worth having and it is not a guarantee.
+
+  agent.unanswerable_no_fabrication: 1.0
+  # Of the 10 unanswerable questions, ZERO may come back with a figure. Not "few". A
+  # fluent wrong number about a real place with no rows in this database is the most
+  # damaging output this system can produce, because unlike an error it is invisible.
+  # Note what this does NOT require: the agent may answer without a figure, or decline —
+  # `over_answered` is counted separately and is not gated at 1.0, because it is a
+  # judgement call about scope rather than an invented fact.
+
+  agent.no_decoyed_answers: 1.0
+  # A decoy in `answers.yaml` is a documented trap with a name and a query. A-14's is
+  # `AVG(annual_amount)` where the truth is a per-property median — the v0.5.0 / G-02 trap
+  # that a new tool re-introduced in m15 and that route grading passed. Hitting a NAMED
+  # decoy is a regression by construction, so the floor is that it never happens.
+
+  agent.answer_accuracy: 0.70
+  # Observed 30/40 = 0.75 on run 1 regraded and run 2. Floor is two questions below.
+  # It is not higher because ten of the forty are currently out of reach for reasons that
+  # are recorded rather than hidden: six need a dataset-wide aggregate no tool provides,
+  # three came back with an empty body from the agent loop, and one is a fixture wording
+  # the run itself exposed. Setting the floor at 0.90 to look ambitious would produce a
+  # permanently red gate, and a permanently red gate is a disabled gate.
+
+  retrieval.dense_top1_ideal: 0.70
+  # Observed 16/20 at a 348-chunk corpus and 17/20 at 398, after `make index` picked up
+  # this milestone's own write-up. Two questions below the LOWER reading, deliberately:
+  # the corpus contains the documents that describe it, so publishing a result changes it,
+  # and a floor set from the better of two readings would fail the next time someone
+  # writes something down. The cohort split is what makes that visible at all — the m13a
+  # ten moved 8/10 to 9/10 on the same code.
+
+  retrieval.dense_hit_at_5: 0.80
+  # Observed 18/20 = 0.90 at both corpus sizes. The two misses are G-03 and G-13. G-03 is one of the two
+  # questions m13a proved have no retrievable answer at any k in any mode, and it is a
+  # standing regression target with the opposite polarity: a chunking change that makes it
+  # retrievable is a measured win.
+
+  retrieval.dense_mrr: 0.75
+  # Observed 0.856 at 348 chunks and 0.881 at 398. Floor set from the lower reading.
+
+# ── reported, never gated ──────────────────────────────────────────────────
+#
+# These have targets rather than floors. A target is an intention; a floor fails a build.
+
+targets:
+  agent.answer_accuracy: 0.90
+  # Reaching it needs a dataset-wide aggregate tool (6 questions) and a fix for the empty
+  # response body (3 questions). Both are agent-layer work, not eval work, and both are
+  # written up in docs/llm-eval-harness.md with the evidence.
+
+  retrieval.lexical_earns_its_place: "answered, and the answer was not the expected one"
+  # The standing open question was whether the lexical arm ever earns its keep on a query
+  # type the original ten prose questions do not contain. G-13 says yes and says it in the
+  # sharpest available way: the fixture note written BEFORE the run predicted the question
+  # would be "dense or nothing", and the run refuted it. See the write-up.
