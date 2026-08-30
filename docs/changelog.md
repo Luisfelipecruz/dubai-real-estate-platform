@@ -1,5 +1,107 @@
 # Changelog
 
+## v0.10.0 - The evaluation harness: grading a number, not a route (2026-08-30)
+
+m15 answered AED 550,010 for a typical Dubai Marina rent against a true per-property
+median of AED 120,000, and `eval/golden/routing.yaml` **passed** it — correctly, because
+route grading cannot see a value. This milestone builds the half that can.
+**38 REST operations - 314 tests (231 existing + 83 new).**
+
+### Added
+
+- `eval/golden/answers.yaml` — 40 questions where the expected value is a **hand-written
+  query against the raw tables**, run at grade time. Never a literal: a literal goes stale
+  when 561,115 rows are reloaded, and is circular if it ever came from the code under test.
+  These queries deliberately do not import `services/market.py`.
+- **Named decoys, recorded as queries.** "Wrong" is a poor verdict when the useful question
+  is *how* wrong. A-14's decoy is `AVG(annual_amount)` where the truth is a per-property
+  median — the v0.5.0 / G-02 trap, re-entered through a new tool — so the harness prints
+  the trap's name rather than an anonymous miss.
+- `api/services/evaluation/` — the graders as library code with 66 tests. Every grading bug
+  this project has found was found by reading output by hand; two of them were one
+  assertion each.
+- `scripts/run_eval.py` — three suites (`truths`, `retrieval`, `agent`) and `--regrade`,
+  which re-scores a stored run with current graders and no model calls.
+- `eval/thresholds.yaml` and `.github/workflows/eval.yml`.
+- `eval/golden/retrieval.yaml` 10 → 20 questions, in two labelled **cohorts** so the
+  published "dense 8/10" is not silently redefined by a larger denominator.
+- `make eval`, `eval-truths`, `eval-retrieval`, `eval-agent`, `eval-routing`.
+
+### Measured
+
+- **Retrieval at n=20, and the corpus moved under it.** dense 16/20 top-1 at a 348-chunk
+  corpus and 17/20 at 398 after `make index` picked up this milestone's own write-up.
+  Nothing else changed. The m13a cohort went 8/10 → 9/10 on dense and 3/10 → 2/10 on
+  lexical: adding two documents that *describe* the system moved published numbers in both
+  directions. Diagnosed to the document — m15's write-up opens by stating its gate
+  question, one word from G-07, so the isolation test cannot catch it. Graded 0 as named
+  decoys rather than deleted, following m13a's stated policy.
+- **A prediction written into the fixture before the run was refuted by the run.** G-13's
+  note argued the question would be "dense or nothing" because the source never uses its
+  vocabulary. Lexical found it at rank 1, dense missed it entirely, and **hybrid threw the
+  correct arm away** — the third demonstration that RRF has no notion of which arm to
+  trust. The bridge is one distinctive noun occurring exactly once in the corpus, which
+  answers m13a's standing question about whether the lexical arm ever earns its place.
+- **Answers: 30/40 and 31/40 across two full runs.** Zero fabricated figures across 80
+  unanswerable questions. Zero answers matching a named decoy. A-14 now answers 120,000.
+- **Seven of run 1's fifteen failures were the grader, not the agent.** Regrading the same
+  responses moved 25/40 to 30/40. All six spatial questions had been marked wrong while
+  every answer was right: the model writes place names with U+202F and U+2019, the
+  community table stores ASCII, and a literal substring test between them is false.
+- **The fourth encoding failure in three detectors, and the system was right every time.**
+  After m15's refusal detector (U+2019) and numeric guard (space separator), and this
+  milestone's number extractor (U+202F). Normalisation is now one shared function.
+- **Routing is not deterministic at temperature 0.** A-14 routed cleanly in one run and
+  reached for the corpus in the next, on identical code — 9/9 and 8/9. The m14 injection
+  mitigation is *probabilistic*; the threshold file now separates the injection question,
+  gated as a property at 1.0, from overall route accuracy, gated as a rate.
+- **nDCG@5 came back as 2.436**, which is impossible for a ratio bounded at 1: the fixture
+  grades documents while `/search` ranks chunks, so a document holding three of the top
+  five slots contributed its gain three times against an ideal counting it once.
+
+### Fixed
+
+- `mentioned_names` returned universe order rather than order of appearance, so grading
+  what an answer "leads with" read the longest matching name.
+- The subject of a spatial question was scored as a wrongly-named neighbour: "X borders Y
+  and Z" is a well-formed answer that restates its own question, and every correct answer
+  scored `partial` at precision 0.67.
+- **The CI workflow this release adds did not run.** It was written to prove the graders
+  need no infrastructure, and it failed at collection on `No module named 'fastapi'`
+  because `conftest.py` imported the application at module scope. Found by running its own
+  commands in a bare container. The import moved inside the fixture, which makes the
+  property real instead of asserted: 66 grader tests and 16 fixture tests now pass on five
+  packages, no database and no model.
+- A lookup for `scripts/` found an empty `api/scripts/` that docker-compose had written
+  into the source tree by creating a nested bind-mount point. Git does not track empty
+  directories, so nothing ever showed it. The lookup now searches for the file.
+- `test_lexical_relaxes_...` pinned a fact about the corpus and broke when the corpus grew
+  — with the exact sentence its own failure message predicted. Rewritten to assert the
+  invariant (the fallback fires iff the strict query matched nothing) rather than one
+  instance of it.
+
+### Found and deliberately NOT fixed here
+
+- **Six questions the data can answer were declined**, because all nine tools are
+  area-scoped and nothing computes a dataset-wide aggregate. The agent said so plainly.
+  The routing eval could not find this: every routing question names an area. It is a
+  tool-layer gap, and an eval milestone that quietly edits the system it measures has
+  stopped being an eval.
+- **Two to three runs per pass return an empty body with `outcome: "answered"`**, always
+  the longest runs. m15's executor docstring states the principle this breaks. It now has
+  its own verdict, `empty`, so a system fault is never counted inside a quality metric.
+
+### Not in this release
+
+- The provider comparison. Still no `ANTHROPIC_API_KEY`; `complete_structured` and
+  `complete_with_tools` remain unobserved against Anthropic's servers. Third milestone
+  carrying this caveat.
+- Prompt caching. `cache_read_input_tokens` has never been above zero.
+- LLM-as-judge. Every question in `answers.yaml` has a deterministic verdict available, and
+  the plan forbids a judge where one does.
+- CI running any of the three suites. A hosted runner has no 1 GB of Land Department data,
+  no Ollama and no API key; the workflow runs the graders and says plainly what it skips.
+
 ## v0.9.0 - Agent orchestration over nine tools (2026-08-29)
 
 `/ask` answers from documents. This answers by *computing* -- resolving a name, running a

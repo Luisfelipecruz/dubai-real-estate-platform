@@ -1,4 +1,5 @@
-.PHONY: up down logs seed test clean corpus index reindex corpus-stats llm-up eval
+.PHONY: up down logs seed test clean corpus index reindex corpus-stats llm-up eval \
+        eval-truths eval-retrieval eval-agent eval-routing
 
 up:                                ## Start all available services
 	docker compose up -d
@@ -51,9 +52,19 @@ llm-up:                            ## Start the CONTAINERISED LLM. On macOS you 
 	docker compose --profile llm up -d ollama
 	docker compose --profile llm exec ollama ollama pull $${OLLAMA_MODEL:-gpt-oss:20b}
 
-eval:                              ## Retrieval + answer evaluation (harness lands in m16)
-	@echo "The evaluation harness is m16. Until it lands this target has nothing to run."
-	@echo "Retrieval today is measurable directly:"
-	@echo "  curl -s 'http://localhost:8000/search?q=how+are+rent+contracts+deduplicated&mode=hybrid'"
-	@echo "  curl -s 'http://localhost:8000/search/debug?q=...'   # EXPLAIN both arms"
-	@exit 1
+eval:                              ## Truths + retrieval + agent, with the regression gate
+	docker compose exec api python /app/scripts/run_eval.py --suite all --gate
+
+eval-truths:                       ## Seconds. Postgres only -- validates the fixture itself
+	docker compose exec api python /app/scripts/run_eval.py --suite truths
+
+eval-retrieval:                    ## The four-mode ablation over eval/golden/retrieval.yaml
+	docker compose exec api python /app/scripts/run_eval.py --suite retrieval
+
+eval-agent:                        ## Route AND answer, graded on one response per question.
+	@echo "Needs Ollama on the HOST with $${OLLAMA_MODEL:-gpt-oss:20b} pulled."
+	@echo "Tens of minutes: every question is a multi-turn conversation with a 20B."
+	docker compose exec api python /app/scripts/run_eval.py --suite agent
+
+eval-routing:                      ## m15's route-only runner. No database, runs anywhere.
+	docker compose exec api python /app/scripts/run_routing_eval.py

@@ -1,4 +1,20 @@
-# Golden retrieval set — the ten questions m13's Experiment 3 was measured against.
+# Golden retrieval set — 20 questions. G-01..G-10 are m13a's; G-11..G-20 are m16's.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# TWO COHORTS, REPORTED SEPARATELY — READ THIS BEFORE QUOTING A NUMBER
+# ─────────────────────────────────────────────────────────────────────────────
+# "dense 8/10 top-1" is published: M-12, the m13a write-up, changelog v0.7.0, a PR body.
+# Reporting 16/20 after adding ten questions would silently redefine that figure, because
+# a different question set is a different measurement and nothing establishes that the new
+# ten are of equal difficulty. So every question carries `cohort`, `run_eval.py --suite
+# retrieval` prints m13a and m16 separately as well as combined, and the published number
+# stays comparable with itself.
+#
+# The m16 ten were chosen for SPREAD rather than for pass rate. Two are phrased in
+# vocabulary the source document does not use — the case the dense arm exists for, and one
+# no relaxation of the lexical tsquery can reach. One carries an explicit decoy that
+# discusses the same measurement for the opposite reason. One is deliberately easy,
+# because a set with no easy questions cannot tell a broken retriever from a hard set.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # WHY THIS FILE IS HERE AND NOT IN docs/
@@ -60,9 +76,11 @@
 schema_version: 1
 corpus: doc_chunks
 recorded: 2026-08-29
+extended: 2026-08-30    # G-11..G-20, graded from the documents before any run
 questions:
 
   - id: G-01
+    cohort: m13a
     text: "How are rent contracts deduplicated?"
     kind: factual
     relevance:
@@ -77,6 +95,7 @@ questions:
                                      # a finding to report, not a leak to patch.
 
   - id: G-02
+    cohort: m13a
     text: "Why is `annual_amount` divided by `no_of_prop`?"
     kind: factual
     relevance:
@@ -85,6 +104,7 @@ questions:
       docs/data-model.md: 1          # documents the column, not the division
 
   - id: G-03
+    cohort: m13a
     text: "What does `meter_sale_price` measure?"
     kind: definitional
     relevance:
@@ -97,6 +117,7 @@ questions:
       and beforehand here, which is the whole difference between an eval and a demo.
 
   - id: G-04
+    cohort: m13a
     text: "Why are rents not plotted as a time series?"
     kind: factual
     relevance:
@@ -104,6 +125,7 @@ questions:
       docs/changelog.md: 2           # same finding, one sentence
 
   - id: G-05
+    cohort: m13a
     text: "What did the GiST index actually buy?"
     kind: factual
     relevance:
@@ -124,18 +146,35 @@ questions:
       documents, and a user asking this would phrase it this way.
 
   - id: G-06
+    cohort: m13a
     text: "Why `PERCENTILE_CONT` instead of `AVG`?"
     kind: factual
     relevance:
       docs/changelog.md: 3           # the AED 6.75 bn single sale that moves a mean
       docs/rag-corpus-design.md: 2   # restates it while arguing SQL over RAG
+    decoys:
+      docs/agent-orchestration.md: 0 # NEW RESIDUAL, added 2026-08-30 and found by
+                                     # measurement rather than by inspection. m15's
+                                     # write-up argues the mean/median split at length
+                                     # while describing a tool that got it wrong, and once
+                                     # it was indexed the lexical arm ranked it FIRST for
+                                     # this question. Graded 0 rather than deleted, same
+                                     # policy as the two residuals above.
 
   - id: G-07
+    cohort: m13a
     text: "Which areas border Business Bay?"
     kind: factual
     relevance:
       Business Bay: 3                     # the area fact sheet; source_type=area_sheet
       docs/polygon-adjacency-plans.md: 1  # how adjacency is computed, not the answer
+      docs/agent-orchestration.md: 0      # NEW RESIDUAL, 2026-08-30. Its opening paragraph
+                                          # states the m15 gate question, which is ONE
+                                          # WORD from this one, so the isolation test does
+                                          # not catch it and the lexical arm went straight
+                                          # to it the moment it was indexed. Exactly the
+                                          # species m13a documented; now demonstrated by a
+                                          # before-and-after rather than argued.
       docs/rag-corpus-design.md: 0        # RESIDUAL, same species as G-01's. Its routing
                                           # table uses "Which communities border Business
                                           # Bay?" to illustrate a question that should go
@@ -144,6 +183,7 @@ questions:
                                           # design document -- so it stays, graded 0.
 
   - id: G-08
+    cohort: m13a
     text: "Which waterfront area has the strongest rental market?"
     kind: vague
     expect_source_type: area_sheet
@@ -156,12 +196,14 @@ questions:
       moved instead. G-08's before/after is therefore not comparable; the other nine are.
 
   - id: G-09
+    cohort: m13a
     text: "What is the N+1 demo showing?"
     kind: factual
     relevance:
       docs/n-plus-one-demo.md: 3     # the captured SQL, selectinload vs N+1
 
   - id: G-10
+    cohort: m13a
     text: "Why is there no LangChain in this repo?"
     kind: factual
     decoys:
@@ -182,3 +224,147 @@ questions:
       ever mentioned LangChain was the eval question itself, sitting in the table -- so
       the grade was assigned from what the retriever had returned, which is precisely the
       error the rubric exists to prevent. Removing the question removed the evidence.
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # COHORT m16 — ten questions added 2026-08-30, graded from the documents
+  # before any of them was run through `/search`.
+  #
+  # WHY A COHORT FIELD, AND WHY IT IS NOT BOOKKEEPING
+  # ─────────────────────────────────────────────────
+  # `8/10 top-1 for dense` is a published number. It is in M-12, in the m13a write-up,
+  # in changelog v0.7.0 and in a PR body. Adding ten questions and reporting `16/20`
+  # would silently redefine it: a different question set is a different measurement,
+  # and whether the new ten are harder or easier than the old ten is unknown until
+  # they are run. So every question carries its cohort, `run_eval.py --suite retrieval`
+  # reports the two separately as well as together, and the m13a numbers stay
+  # comparable with themselves.
+  #
+  # These ten were chosen for spread, not for pass rate. Two of them (G-13, G-16) are
+  # phrased in vocabulary that does NOT appear in the source document, which is the
+  # case the dense arm exists to serve and the case no relaxation of the lexical
+  # tsquery can reach. One (G-14) has an explicit decoy that discusses the same
+  # measurement for a different reason.
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  - id: G-11
+    cohort: m16
+    text: "If the first writer aborts, what happens to the insert that was waiting on it?"
+    kind: factual
+    relevance:
+      docs/concurrent-inserts.md: 3   # "the same race where A rolls back" — B wakes and
+                                      # succeeds; block first, decide after
+      docs/architecture.md: 1         # names the unique keys, says nothing about the race
+
+  - id: G-12
+    cohort: m16
+    text: "Do missing values in an auto-increment column mean rows were lost?"
+    kind: factual
+    relevance:
+      docs/concurrent-inserts.md: 3   # nextval never rolls back; gaps are expected, not
+                                      # corruption; a surrogate key is an identity, not a
+                                      # count
+    note: >
+      Phrased away from the source's vocabulary on purpose. The document says "sequence",
+      "SERIAL" and "gapless"; the question says "auto-increment" and "missing values",
+      which is how someone who has just seen the gap would ask. No lexical relaxation
+      bridges that — this one is dense or nothing.
+
+  - id: G-13
+    cohort: m16
+    text: "What breaks if the shapes are made lighter before sending them to a browser?"
+    kind: factual
+    relevance:
+      docs/polygon-simplification.md: 3    # shared edges decimate twice and pull apart;
+                                           # 176 of 483 borders migrate touches->overlaps
+                                           # at 0.0001, adjacency lost outright by 0.0005
+      docs/polygon-adjacency-plans.md: 1   # the DE-9IM counts on the FULL geometry, which
+                                           # is the baseline that document is measured
+                                           # against, not the finding
+    note: >
+      The hardest of the new ten by construction. The source never uses "lighter" or
+      "browser" in the sentence that answers this — it says "simplification" and
+      "PreserveTopology" — so the match has to be semantic. G-16 in the m13a cohort made
+      the same point from the other direction with "border" against "boundari".
+
+  - id: G-14
+    cohort: m16
+    text: "Why do some administrative boundaries in this dataset overlap each other?"
+    kind: factual
+    relevance:
+      docs/polygon-adjacency-plans.md: 3   # 131 overlapping pairs, largest 5,471 m2
+                                           # against a 190 km2 polygon = 0.0029%;
+                                           # digitisation slivers, not shared territory
+    decoys:
+      docs/polygon-simplification.md: 0    # DISCUSSES OVERLAPS AT LENGTH and is wrong
+                                           # here. Its overlaps are an ARTEFACT it
+                                           # introduces by simplifying; this question is
+                                           # about overlaps present in the source data.
+                                           # Same words, opposite cause — which is what a
+                                           # decoy is for.
+
+  - id: G-15
+    cohort: m16
+    text: "Which engine finished the full file faster, and what did the naive version cost in memory?"
+    kind: factual
+    relevance:
+      docs/pandas-vs-pyspark.md: 3    # 19.9 s / 2,803 MB naive, 8.5 s / 230 MB tuned,
+                                      # 8.0 s Spark; the 2 GB container kills the naive run
+      docs/changelog.md: 1            # records that the comparison happened
+
+  - id: G-16
+    cohort: m16
+    text: "Why did the two engines disagree about how many rows the file contained?"
+    kind: factual
+    relevance:
+      docs/pandas-vs-pyspark.md: 3    # four rows carry Hijri dates, years 1416-1422 AH;
+                                      # pandas coerces to NaT (datetime64[ns] range),
+                                      # Spark parses them and invents four groups
+    note: >
+      The strongest finding in that document and the one a reader remembers. It is graded
+      here because it is a SINGLE-DOCUMENT answer with no competitor, which makes it the
+      control against G-13 and G-14: if this one misses, the problem is retrieval in
+      general rather than the specific hardness those two were built for.
+
+  - id: G-17
+    cohort: m16
+    text: "Why is a chunk's position in the document stored alongside its text?"
+    kind: factual
+    relevance:
+      docs/rag-corpus-design.md: 3         # heading paths prepended, nine tokens, restore
+                                           # what a mid-document chunk has lost; the hash
+                                           # covers the heading path too
+      docs/hybrid-retrieval-plans.md: 1    # measures retrieval over those chunks
+
+  - id: G-18
+    cohort: m16
+    text: "Why is the number of tokens in a chunk worked out twice?"
+    kind: factual
+    relevance:
+      docs/rag-corpus-design.md: 3    # estimate_tokens picks boundaries, the embeddings
+                                      # service returns the real count; the estimator is
+                                      # conservative because underestimating ends in
+                                      # silent truncation
+      docs/llm-app-layer.md: 2        # answers it from the other end — the estimator
+                                      # checked against gpt-oss's reported prompt_tokens,
+                                      # median 1.123. Less direct, genuinely responsive.
+
+  - id: G-19
+    cohort: m16
+    text: "What does the Spark job write out for each area and quarter?"
+    kind: factual
+    relevance:
+      docs/data-model.md: 3           # area_trends: avg_price_sqm, transaction_count,
+                                      # yoy_price_change, keyed by area/year/quarter/dataset
+      docs/pandas-vs-pyspark.md: 1    # what the Spark job DOES, not what it writes
+
+  - id: G-20
+    cohort: m16
+    text: "Why does the platform take file uploads rather than reading from the portal directly?"
+    kind: factual
+    relevance:
+      docs/architecture.md: 3         # no stable public API; scrapers are brittle; mirrors
+                                      # how organisations actually receive government data
+    note: >
+      Deliberately easy, and included for that reason. A set made entirely of hard
+      questions cannot distinguish "the retriever is broken" from "these questions are
+      hard", and a floor with no easy questions under it is not a floor.

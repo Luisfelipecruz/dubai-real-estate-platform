@@ -1,0 +1,120 @@
+# The regression gate — and an honest account of what a runner can actually check.
+#
+# WHAT CI HAS
+#   A Postgres service container, an empty one.
+#
+# WHAT CI DOES NOT HAVE, AND WILL NOT
+#   * 561,115 rows of Dubai Land Department data. The raw exports are ~1 GB, are not in
+#     this repository, and are not redistributable.
+#   * An Ollama host running gpt-oss:20b. A 20B on a hosted runner's CPU is minutes per
+#     turn, and every agent question is several turns.
+#   * An ANTHROPIC_API_KEY. There is not one on the development machine either, which is
+#     why two provider paths remain unrun and both PR bodies say so.
+#
+# So this workflow runs the half that is deterministic, free and offline: the graders and
+# the fixtures. It does NOT run `--suite agent`, `--suite retrieval` or `--suite truths`,
+# and it does not pretend to.
+#
+# THAT IS A DELIBERATE CHOICE, NOT A GAP LEFT OPEN
+# -------------------------------------------------
+# The tempting alternative is a ~2,000-row snapshot in `eval/fixtures/snapshot.sql`, which
+# the plan's §6.3 proposes. It was tried on paper and rejected for a specific reason: every
+# `recorded_value` in `eval/golden/answers.yaml` is a property of the FULL dataset, so the
+# same fixture run against a sample reports forty drifts and one true value — and a check
+# that is red on a healthy system is a check somebody turns off in a fortnight. Making it
+# green would mean maintaining a second set of expected values for the sample, which is a
+# second fixture to keep honest for no additional signal about the system that ships.
+#
+# What CI can prove is that the measuring equipment is sound: that the extractor handles
+# the separators a model actually emits, that a decoy is reported by name, that an empty
+# set is an answer, that a refusal to an unanswerable question passes and a figure fails,
+# that the two route graders agree question by question, and that the fixtures are
+# internally consistent and read-only. Every grading bug this project has hit — the ASCII
+# apostrophe, the marker in the second sentence, the narrow no-break space, the subject
+# scored as a wrong neighbour — is caught by exactly that.
+#
+# The suites that need data and a model are `make eval`, run by a human, on a machine that
+# has both. Their results are written into docs/llm-eval-harness.md with the host load
+# beside every latency, which is the only form in which a number from this stack means
+# anything.
+
+name: eval
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  graders:
+    name: graders and fixtures (no data, no model)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the test dependencies only
+        # Five packages, no fastapi, no asyncpg, no uvicorn. That is the point of the job
+        # and it only works because `api/tests/conftest.py` imports the application INSIDE
+        # its fixture rather than at module scope. It did not, and this workflow failed at
+        # collection with `No module named 'fastapi'` — found by running these exact
+        # commands in a bare container instead of assuming they would work.
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio pyyaml sqlalchemy httpx
+
+      - name: Grader unit tests
+        # No database, no network, no model. If these need any of those, that is the bug.
+        working-directory: api
+        run: python -m pytest tests/test_evaluation.py -q
+
+      - name: Fixture integrity
+        # Includes the assertion that scripts/run_eval.py and scripts/run_routing_eval.py
+        # grade a route identically. Two graders is two chances to disagree, and if they
+        # ever do, m15's routing numbers stop being comparable with m16's.
+        working-directory: api
+        run: python -m pytest tests/test_eval_fixtures.py -q -k "not corpus"
+
+      - name: The fixtures parse, and nothing in them can write
+        run: |
+          python - <<'PY'
+          import sys, pathlib, yaml
+          sys.path.insert(0, "api")
+          from services.evaluation.truth import check_sql_is_readonly
+          root = pathlib.Path("eval/golden")
+          answers = yaml.safe_load((root / "answers.yaml").read_text())
+          routing = yaml.safe_load((root / "routing.yaml").read_text())
+          retrieval = yaml.safe_load((root / "retrieval.yaml").read_text())
+          statements = 0
+          for question in answers["questions"]:
+              for sql in [question.get("ground_truth_sql"), *(question.get("decoys") or {}).values()]:
+                  if sql:
+                      check_sql_is_readonly(sql)
+                      statements += 1
+          print(
+              f"{len(answers['questions'])} answer questions ({statements} read-only queries), "
+              f"{len(routing['questions'])} routing, {len(retrieval['questions'])} retrieval"
+          )
+          PY
+
+  not-run-here:
+    name: what this workflow deliberately does not check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say it out loud
+        # A job that prints. It exists so the limitation is visible in the Actions tab
+        # rather than buried in a comment, because a reader who sees a green `eval` badge
+        # will otherwise assume the eval ran.
+        run: |
+          echo "NOT RUN IN CI, and not fakeable here:"
+          echo "  make eval-truths     needs 561,115 rows of DLD data"
+          echo "  make eval-retrieval  needs the embedded corpus and the embeddings service"
+          echo "  make eval-agent      needs Ollama with gpt-oss:20b, several turns/question"
+          echo "  the provider comparison  needs an ANTHROPIC_API_KEY that does not exist yet"
+          echo
+          echo "Results from those live in docs/llm-eval-harness.md, with host load beside"
+          echo "every latency figure. A green tick here means the GRADERS are sound."

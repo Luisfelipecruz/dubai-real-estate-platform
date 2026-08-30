@@ -201,31 +201,67 @@ async def test_the_default_mode_is_dense_and_the_default_is_not_reranked(client)
     assert body["timings_ms"]["lexical"] == 0, "dense mode ran the lexical arm"
 
 
-async def test_lexical_relaxes_a_conjunctive_query_that_matches_nothing(client):
+async def test_lexical_relaxes_exactly_when_the_strict_query_matches_nothing(client):
     """`websearch_to_tsquery` ANDs its terms, so a natural-language question is a
     conjunction over 4-6 stems and one missing stem returns an empty set -- measured at
     zero chunks for 5 of the 10 golden questions. The fallback ORs the terms.
 
-    The question here is the clean case: the fact sheets say "shares a boundary with",
-    the question says "border", and no chunk in the corpus contains both that stem and
-    the area name. Strict returns nothing; relaxed returns something.
+    REWRITTEN IN m16, AND THE REASON IS THE POINT. The original pinned one question: the
+    fact sheets say "shares a boundary with", the question says "border", and no chunk
+    contained both that stem and the area name, so strict matched nothing and the fallback
+    ran. That held until `make index` picked up m15's write-up, whose opening paragraph
+    contains both -- and the test failed with the exact sentence its own error message had
+    predicted: "the corpus gained a chunk containing both".
+
+    A test whose premise is a fact about a corpus that grows every time someone documents
+    the system is a test with a shelf life. So it now asserts the INVARIANT rather than
+    one instance of it: the relaxation fires if and only if the strict conjunctive query
+    matched nothing. That is true whatever the corpus contains, and it still fails if the
+    fallback is wired to the wrong condition -- which is what the original was protecting.
+
+    The strict count is taken from Postgres directly, because `/search` reports only
+    whether the fallback ran and not what the strict arm found.
     """
     if not await corpus_is_populated(client):
         pytest.skip("corpus not indexed - run `make index`")
 
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from config import DATABASE_URL
+
+    question = "Which areas border Business Bay?"
     resp = await client.get(
         "/search",
-        params={"q": "Which areas border Business Bay?", "mode": "lexical",
-                "rerank": "false"},
+        params={"q": question, "mode": "lexical", "rerank": "false"},
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["lexical_relaxed"] is True, (
-        "the strict conjunctive query matched something, so the fallback never ran -- "
-        "either the corpus gained a chunk containing both 'border' and 'Business Bay', "
-        "or the relaxation was wired to fire when it should not"
+
+    # NullPool for the same reason test_corpus_isolation.py uses it: the shared engine
+    # pools connections and pytest-asyncio gives every test its own loop.
+    engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            strict = (
+                await conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM doc_chunks "
+                        "WHERE tsv @@ websearch_to_tsquery('english', :q)"
+                    ),
+                    {"q": question},
+                )
+            ).scalar()
+    finally:
+        await engine.dispose()
+
+    assert body["lexical_relaxed"] is (strict == 0), (
+        f"strict conjunctive query matched {strict} chunk(s) but lexical_relaxed="
+        f"{body['lexical_relaxed']}. The fallback must run when strict finds nothing "
+        f"and must not run when it finds something."
     )
-    assert body["results"], "relaxation ran and still returned nothing"
+    assert body["results"], "the lexical arm returned nothing at all"
 
 
 async def test_hybrid_does_not_relax_its_lexical_arm(client):
