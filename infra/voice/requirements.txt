@@ -1,0 +1,27 @@
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+
+# faster-whisper is CTranslate2, NOT torch. That is the whole reason it is here: the
+# reference Whisper implementation would drag ~900 MB of torch into a container whose job
+# is to be fast, and CTranslate2 int8 on CPU is several times quicker on top of that.
+# The embeddings service already pays the torch cost once; the voice path must not pay it
+# a second time for a stage with a 250 ms target.
+faster-whisper==1.2.1
+
+# Piper: ONNX Runtime, no GPU, no API, streams by sentence. The aarch64 wheel is 34 MB.
+piper-tts==1.7.0
+
+# webrtcvad-wheels, NOT webrtcvad, and the difference is not cosmetic.
+#
+# The original `webrtcvad` was last released in 2017. It ships no wheel — so it needs gcc
+# and python3-dev in the image — and its module imports `pkg_resources` at load time, which
+# setuptools REMOVED in v81. Installing it today therefore also means pinning
+# `setuptools<81`, i.e. shipping a dependency that only runs against a shim with an
+# announced removal date, in the one pipeline stage the plan calls the biggest latency
+# lever. Measured, both ways, before choosing.
+#
+# webrtcvad-wheels is the same C code with prebuilt wheels and that import removed. No
+# compiler in the image, no setuptools pin, same VAD.
+webrtcvad-wheels==2.0.14
+
+numpy==2.2.2

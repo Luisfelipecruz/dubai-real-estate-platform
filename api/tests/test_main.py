@@ -58,12 +58,42 @@ def test_every_copilot_router_that_exists_is_registered_and_no_other():
             # Not built yet. Nothing it would have registered may be present, and the
             # only way to know what that is, is to know it is nothing.
             continue
-        declared = {route.path for route in module.router.routes}
-        assert declared, f"routers/{name}.py declares no routes"
-        missing = declared - paths
+        # HTTP routes and WEBSOCKET routes are checked against different things, and
+        # m17 is what forced the split. `app.openapi()["paths"]` contains HTTP operations
+        # only — FastAPI excludes WebSockets from the schema, correctly, because a socket
+        # is not an operation with a method and a response model. So the first WebSocket
+        # in this project (`/voice/stream`) failed a test that had been right for four
+        # milestones, by asserting a premise that had simply never been tested.
+        #
+        # The contract still holds in both halves: an HTTP route the router declares must
+        # appear in the schema, and a WebSocket route it declares must be mounted on the
+        # app. Checking the socket against `app.routes` rather than the schema is the only
+        # place this file looks at internal route objects, and it says why.
+        from starlette.routing import WebSocketRoute
+
+        declared_http = {
+            route.path for route in module.router.routes
+            if not isinstance(route, WebSocketRoute)
+        }
+        declared_ws = {
+            route.path for route in module.router.routes
+            if isinstance(route, WebSocketRoute)
+        }
+        assert declared_http or declared_ws, f"routers/{name}.py declares no routes"
+
+        missing = declared_http - paths
         assert not missing, (
             f"routers/{name}.py exists but {sorted(missing)} is not registered -- "
             f"the tolerant loop swallowed something it should not have"
+        )
+
+        mounted_ws = {
+            route.path for route in app.routes if isinstance(route, WebSocketRoute)
+        }
+        missing_ws = declared_ws - mounted_ws
+        assert not missing_ws, (
+            f"routers/{name}.py declares websocket {sorted(missing_ws)} and it is not "
+            f"mounted -- absent from the schema is expected, absent from the app is not"
         )
 
 
