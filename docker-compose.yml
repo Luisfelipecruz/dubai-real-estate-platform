@@ -95,6 +95,10 @@ services:
       AGENT_MAX_OUTPUT_TOKENS: ${AGENT_MAX_OUTPUT_TOKENS:-1200}
       AGENT_EFFORT: ${AGENT_EFFORT:-high}
       VOICE_URL: ${VOICE_URL:-http://voice:8200}
+      # m17. Read by api/services/voice/settings.py. Same gap, api side: the 800 ms
+      # figure is the plan's and it must be tunable from .env for anyone measuring against
+      # a different target.
+      VOICE_BUDGET_MS: ${VOICE_BUDGET_MS:-800}
     # Docker Desktop resolves host.docker.internal on its own; Linux does not, and this
     # line is what makes the host-Ollama default portable rather than a Mac-only trick.
     extra_hosts:
@@ -196,6 +200,14 @@ services:
     profiles: ["voice"]
     environment:
       WHISPER_MODEL: ${WHISPER_MODEL:-base.en}
+      # m17. Read by infra/voice/app.py, and absent from this file until now -- the m14
+      # gap recurring: compose forwards only what it lists, so setting these in .env did
+      # nothing at all and the defaults in the code were the effective values regardless.
+      # Deferred to §A.5.0 rather than written into the working tree, because
+      # docker-compose.yml is claimed by m15.
+      WHISPER_COMPUTE: ${WHISPER_COMPUTE:-int8}
+      PIPER_VOICE: ${PIPER_VOICE:-en_US-lessac-medium}
+      PIPER_DATA_DIR: ${PIPER_DATA_DIR:-/models/piper}
       HF_HOME: /models
     volumes:
       - model_cache:/models

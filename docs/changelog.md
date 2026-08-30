@@ -1,5 +1,92 @@
 # Changelog
 
+## v0.11.0 - The 800 ms budget, measured (2026-08-30)
+
+A complete spoken turn takes **3.0-3.3 seconds to first audio against an 800 ms budget** --
+3.8-4.1x over, and roughly 2.4x worse than the plan's own pessimistic projection. The
+finding is not that the voice stack is slow. **Generation is 65% of it and the three stages
+this release actually built are 28%.**
+**40 REST operations - 340 tests (314 existing + 26 new).**
+
+### Added
+
+- `infra/voice/` -- a third model service, 820 MB and **no torch anywhere in it**. Whisper
+  through CTranslate2, Piper through ONNX Runtime, `webrtcvad-wheels` for endpointing.
+  `POST /vad`, `POST /stt`, `POST /tts`, `GET /health`, every response carrying its own
+  stage timing.
+- `POST /voice/turn` -- the MEASUREMENT path. Raw PCM in, answer and speech out, every
+  stage timed. It exists because a WebSocket cannot be measured with `curl`, and every
+  figure in `docs/voice-latency.md` comes from it.
+- `WS /voice/stream` -- the interactive path. Binary frames up; `endpoint`, `transcript`,
+  `answer`, audio frames and `timings` down. SSE cannot carry audio upstream.
+- `GET /voice/budget` -- the budget as data, with the last measurement beside each target
+  and the verdict computed rather than written down. An unmeasured stage reports `null`,
+  not `0`.
+- `api/services/voice/` and `api/models/voice.py`.
+
+`api/main.py` was NOT touched. `voice` has been in `COPILOT_ROUTERS` since m13 and the
+tolerant loop found it by name -- the third demonstration, after `ask` in m14 and `agent`
+in m15.
+
+### Measured
+
+- **3,025-3,318 ms to first audio, five runs, host load ~18.** VAD 1.4-2.4 ms, STT
+  387-431 ms, retrieval 186-255 ms, generation 2,043-2,157 ms, TTS 353-560 ms.
+- **The 200 ms VAD budget is not a cost, it is a decision.** Endpoint detection over four
+  seconds of audio costs **0.35-0.52 ms**. The 200 ms is trailing silence -- time spent
+  deliberately waiting. The endpointer reports where silence BEGAN, so the threshold cannot
+  flatter its own measurement: 3,340 ms at thresholds of 100, 200 and 400 ms, and NO
+  endpoint at 800 ms because the clip holds only 600 ms of pause. The lever is bounded by
+  how long the speaker stops for, not by how fast the detector is.
+- **Beam search buys nothing and costs 20-60 ms.** Greedy 329-352 ms, the library's default
+  beam of 5 at 346-412 ms, identical transcript. Greedy is now the default.
+- **The TTS quality/latency trade does not exist here.** `medium` 122-201 ms against `low`
+  136-196 ms, back to back at the same load. The small voice is not faster, so there is no
+  latency argument for the quality hit.
+- **Host load moves the same call 3-4x.** TTS at 122-201 ms at load ~7.8 and 499-673 ms at
+  load ~17, same text, same warm model. Measured DIRECTLY against the service it is
+  499-673 ms while the same stage measured INSIDE the pipeline is 353-560 ms -- the
+  pipeline is not the cause, the machine is busy. Fourth independent reproduction of M-21
+  in this project, after M-35 and M-48.
+- **At load ~7.8 the three new stages total ~480 ms and fit inside 800 ms. At load ~18 they
+  total ~850 ms and do not.** Even the part of the budget that could fit is only reliably
+  inside it on an idle machine.
+- **The agent route measured rather than argued.** 3,220 ms and 4,557 ms against `ask`'s
+  3,025-3,318 ms. On the easiest question it is comparable; M-48 measured the distribution
+  across 40 questions at 1.4-58.6 s, and it is the distribution that disqualifies it.
+- **The three levers of plan §7.2, scored honestly: ~8%, 0% (already taken), and unbuilt.**
+  Overlapping retrieval can save at most 8% because retrieval turned out to be cheap.
+  Skipping the reranker is free rather than a sacrifice -- m16 measured it at 8/20 top-1
+  against dense's 17/20 while costing 2.9 s, so it loses on both axes. Early synthesis of
+  the opening sentence is real, but the larger half needs token streaming that does not
+  exist.
+
+### Fixed
+
+- **The WebSocket protocol was a lie.** `/voice/stream` documented a binary audio frame
+  after the answer and sent none -- the pipeline kept only the LENGTH of the synthesised
+  audio. A client would have received a correct transcript, a correct answer, correct
+  timings, and silence. Found by connecting a real client and counting frames. It now
+  streams the PCM in the same 20 ms framing the client sends, and a test asserts the count.
+- **`test_every_copilot_router_...` had an untested premise.** It asserted that every route
+  a copilot router declares appears in the OpenAPI schema. True for four milestones, and
+  broken by the project's first WebSocket, which FastAPI correctly excludes. HTTP routes
+  are now checked against the schema and WebSocket routes against the mounted app.
+
+### Not in this release
+
+- **Streaming generation.** The single largest available win, and it needs the SSE layer
+  m15 declined to build. Until then time-to-first-audio has a two-second floor.
+- **A browser client.** Endpointing runs server-side; a local endpointer would save a
+  round trip per chunk, but VAD compute is 0.35 ms so the saving is transport, and there is
+  no client to put it in.
+- **Opus.** §7.1 specifies 20 ms Opus frames; the transport carries raw PCM at 20 ms
+  framing. Opus would cut bandwidth ~10x and bandwidth is not what is wrong here.
+- **Three environment variables.** `PIPER_VOICE`, `WHISPER_COMPUTE` and `VOICE_BUDGET_MS`
+  are read by the code and were not forwarded by compose -- the m14 gap recurring. Added in
+  this release's own command-sheet step, after the milestones that claim that file have
+  been committed.
+
 ## v0.10.0 - The evaluation harness: grading a number, not a route (2026-08-30)
 
 m15 answered AED 550,010 for a typical Dubai Marina rent against a true per-property
