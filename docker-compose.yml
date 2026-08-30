@@ -75,7 +75,25 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-gpt-oss:20b}
       LLM_MAX_INPUT_TOKENS: ${LLM_MAX_INPUT_TOKENS:-8000}
       LLM_MAX_COST_USD_PER_REQUEST: ${LLM_MAX_COST_USD_PER_REQUEST:-0.50}
+      # These three are m14's, and they were MISSING here until m15. Compose forwards
+      # only what it lists, so setting them in .env did nothing at all -- the defaults in
+      # api/services/llm/settings.py were the effective values regardless. The gap was
+      # found while writing m14, recorded in its module docstring and in
+      # docs/llm-app-layer.md rather than fixed there, because this file belonged to an
+      # uncommitted m13 at the time. m13 is merged, so this is that deferred edit.
+      LLM_TIMEOUT_S: ${LLM_TIMEOUT_S:-120}
+      LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-1500}
+      LLM_REPAIR_ATTEMPTS: ${LLM_REPAIR_ATTEMPTS:-2}
+      # ── Agent orchestration (m15) ──────────────────────────────
+      # AGENT_MAX_STEPS was declared here by m13 before the agent existed. The rest
+      # arrive with it. Every one is a ceiling derived from a measurement; see
+      # api/services/agent/settings.py for which measurement.
       AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-8}
+      AGENT_TIMEOUT_S: ${AGENT_TIMEOUT_S:-300}
+      AGENT_MAX_COST_USD_PER_RUN: ${AGENT_MAX_COST_USD_PER_RUN:-2.00}
+      AGENT_MAX_TOOL_RESULT_CHARS: ${AGENT_MAX_TOOL_RESULT_CHARS:-6000}
+      AGENT_MAX_OUTPUT_TOKENS: ${AGENT_MAX_OUTPUT_TOKENS:-1200}
+      AGENT_EFFORT: ${AGENT_EFFORT:-high}
       VOICE_URL: ${VOICE_URL:-http://voice:8200}
     # Docker Desktop resolves host.docker.internal on its own; Linux does not, and this
     # line is what makes the host-Ollama default portable rather than a Mac-only trick.
@@ -84,6 +102,10 @@ services:
     volumes:
       - ./api:/app
       - ./scripts:/app/scripts
+      # Read-only, and the flag is the point rather than caution. `eval/` holds fixtures
+      # graded BEFORE their run; a container that can rewrite them could turn a failing
+      # eval into a passing one without anyone noticing.
+      - ./eval:/app/eval:ro
     ports:
       - "8000:8000"
     healthcheck:

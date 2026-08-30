@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import text
 
 from database import engine
+from services import market
 from models.community import (
     CommunityDissolve,
     CommunityFeature,
@@ -30,11 +31,12 @@ router = APIRouter()
 # The three DE-9IM predicates this API exposes for adjacency. Whitelisted rather
 # than interpolated freely — the value reaches SQL as an identifier, not a bind
 # parameter, so it must never come straight from the query string.
-_ADJACENCY_PREDICATES = {
-    "touches": "ST_Touches",       # boundaries meet, interiors do NOT
-    "intersects": "ST_Intersects",  # any shared point at all — the loosest
-    "overlaps": "ST_Overlaps",     # interiors intersect, neither contains the other
-}
+#
+# m15 moved the table and the adjacency query itself to services/market.py, because the
+# agent tool layer calls the same join by area NAME and two copies of a spatial predicate
+# is two chances to disagree about what "borders" means. Re-exported under the old
+# private name so nothing that imported it breaks.
+_ADJACENCY_PREDICATES = market.ADJACENCY_PREDICATES
 
 
 @router.get("/communities/geojson", response_model=CommunityFeatureCollection)
@@ -505,58 +507,18 @@ async def community_neighbors(
     483 touching pairs, 131 overlapping, 614 intersecting — and 483 + 131 = 614
     exactly, because no pair here contains or equals another.
     """
-    fn = _ADJACENCY_PREDICATES.get(predicate.lower())
-    if fn is None:
+    if predicate.lower() not in _ADJACENCY_PREDICATES:
         raise HTTPException(
             status_code=422,
             detail=f"predicate must be one of {sorted(_ADJACENCY_PREDICATES)}",
         )
 
     async with engine.connect() as conn:
-        origin = (
-            await conn.execute(
-                text("SELECT id, community_name_en FROM communities WHERE id = :id"),
-                {"id": community_id},
-            )
-        ).first()
+        result = await market.community_neighbors(conn, community_id, predicate)
 
-        if origin is None:
-            raise HTTPException(status_code=404, detail="Community not found")
-
-        rows = await conn.execute(
-            text(f"""
-                SELECT
-                    b.id,
-                    b.community_name_en,
-                    -- the shared boundary is a LINE, so its length is what has
-                    -- meaning here, not an area; geography again for metres
-                    ST_Length(ST_Intersection(a.geom, b.geom)::geography) AS shared_m
-                FROM communities a
-                JOIN communities b
-                  ON a.id <> b.id
-                 AND {fn}(a.geom, b.geom)
-                WHERE a.id = :id
-                ORDER BY shared_m DESC, b.community_name_en
-            """),
-            {"id": community_id},
-        )
-
-        data = [
-            CommunityNeighbor(
-                id=r[0],
-                community_name_en=r[1],
-                shared_boundary_m=round(float(r[2] or 0.0), 2),
-            )
-            for r in rows.fetchall()
-        ]
-
-    return CommunityNeighborsResponse(
-        id=origin[0],
-        community_name_en=origin[1],
-        predicate=predicate.lower(),
-        total=len(data),
-        data=data,
-    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Community not found")
+    return result
 
 
 @router.get(

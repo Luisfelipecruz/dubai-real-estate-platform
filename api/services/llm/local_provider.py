@@ -24,13 +24,21 @@ nesting.
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import httpx
 
 from . import settings
-from .base import LLMError, LLMProvider, LLMResponse, Usage
+from .base import (
+    Exchange,
+    LLMError,
+    LLMProvider,
+    LLMResponse,
+    ToolCall,
+    ToolSpec,
+    Usage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +95,41 @@ class OllamaProvider(LLMProvider):
         return body, int((time.perf_counter() - started) * 1000)
 
     @staticmethod
+    def _tool_calls_of(message: dict[str, Any]) -> tuple[ToolCall, ...]:
+        """OpenAI-style tool calls, with the argument blob parsed.
+
+        `function.arguments` arrives as a JSON *string*, not an object, and it can be
+        malformed even under constrained decoding. A parse failure yields a call with NO
+        arguments rather than an exception, on purpose: the executor validates arguments
+        against the tool's schema anyway, so an empty dict comes back as "missing
+        required field", which is fed to the model as a normal error result and can be
+        retried. Raising here would end an eight-step run over one bad blob.
+        """
+        calls = []
+        for raw in message.get("tool_calls") or []:
+            function = raw.get("function") or {}
+            blob = function.get("arguments")
+            try:
+                arguments = json.loads(blob) if isinstance(blob, str) else (blob or {})
+            except json.JSONDecodeError:
+                logger.warning(
+                    "tool call %s had unparseable arguments: %.200s",
+                    function.get("name"),
+                    blob,
+                )
+                arguments = {}
+            if not isinstance(arguments, dict):
+                arguments = {}
+            calls.append(
+                ToolCall(
+                    id=raw.get("id") or f"call_{len(calls)}",
+                    name=function.get("name") or "",
+                    arguments=arguments,
+                )
+            )
+        return tuple(calls)
+
+    @staticmethod
     def _unpack(body: dict[str, Any], model: str, latency_ms: int, repairs: int):
         try:
             message = body["choices"][0]["message"]
@@ -113,6 +156,7 @@ class OllamaProvider(LLMProvider):
             request_id=body.get("id"),
             repair_attempts=repairs,
             raw={"reasoning": message.get("reasoning")} if message.get("reasoning") else {},
+            tool_calls=OllamaProvider._tool_calls_of(message),
         )
 
     # ── the interface ───────────────────────────────────────────────────────
@@ -134,6 +178,87 @@ class OllamaProvider(LLMProvider):
                 "max_tokens": max_tokens,
                 # Zero, and not for "accuracy". A grounded answer is graded against a
                 # fixture; a sampled one makes every eval run a different experiment.
+                "temperature": 0,
+                "stream": False,
+            }
+        )
+        return self._unpack(body, self.model, latency_ms, repairs=0)
+
+    async def complete_with_tools(
+        self,
+        *,
+        system: str,
+        user: str,
+        tools: Sequence[ToolSpec],
+        exchanges: Sequence[Exchange] = (),
+        max_tokens: int,
+        effort: str = "medium",
+    ) -> LLMResponse:
+        """One turn of a tool-using conversation. No loop, no repair.
+
+        NO REPAIR LOOP HERE, and that is a decision rather than an omission.
+        `complete_structured` retries because there is one right shape and a truncated
+        object is unusable. A tool-calling turn has no single right shape: the model may
+        answer, or call one tool, or call three, and all are valid. What could go wrong
+        -- a bad argument blob, a tool that fails -- is handled by feeding the error back
+        as a tool RESULT, which is the mechanism the model is already in the middle of
+        using. Adding a second retry mechanism on top would double-count steps against
+        AGENT_MAX_STEPS and hide failures the executor is supposed to see and log.
+
+        gpt-oss:20b was verified to do native function calling through this endpoint
+        before any of the agent layer was written: it routed a median-price question to
+        the SQL tool and a "how does this work" question to the document tool, unprompted,
+        on the first attempt.
+        """
+        logger.debug("local provider ignores effort=%s (no equivalent knob)", effort)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        for exchange in exchanges:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": exchange.response.text or "",
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": json.dumps(call.arguments),
+                            },
+                        }
+                        for call in exchange.response.tool_calls
+                    ],
+                }
+            )
+            # Every result for this turn, together and in one go. See Exchange.
+            for result in exchange.results:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": result.call_id,
+                        "content": result.content,
+                    }
+                )
+
+        body, latency_ms = await self._post(
+            {
+                "model": self.model,
+                "messages": messages,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.parameters,
+                        },
+                    }
+                    for tool in tools
+                ],
+                "max_tokens": max_tokens,
                 "temperature": 0,
                 "stream": False,
             }

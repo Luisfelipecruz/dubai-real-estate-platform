@@ -1,5 +1,87 @@
 # Changelog
 
+## v0.9.0 - Agent orchestration over nine tools (2026-08-29)
+
+`/ask` answers from documents. This answers by *computing* -- resolving a name, running a
+PostGIS adjacency query, then an aggregate -- and reports every step it took, with its
+cost and latency. **38 REST operations - 231 tests (191 existing + 40 new).**
+
+### Added
+- `POST /agent/query` -- multi-step question answering over nine tools. Returns the
+  answer, every step with its arguments and raw tool result, the tool categories used,
+  grounding warnings, per-step cost and a `generate`/`tools` latency split.
+- `GET /agent/tools` -- the tool catalogue as the model receives it, generated schema
+  included. Reviewing a paraphrase of prompt content is not reviewing it.
+- `GET /agent/runs` -- aggregates over `agent_runs`: refusal rate, step-cap rate, tool
+  error rate, unverified numbers, p50/p95.
+- `GET /areas/resolve` -- turn a name a person would use into the name the data
+  contains. **`Dubai Marina` is not in the DLD data**; it is filed as `Marsa Dubai`.
+- `GET /areas/{name}/neighbors` -- adjacency keyed by name rather than by polygon id,
+  returning candidate polygon names when nothing matches.
+- `api/services/market.py` -- the tabular layer, extracted from the routers so the agent
+  and the REST endpoints cannot state two different exact numbers for one question.
+- `api/services/agent/` -- `tools.py`, `executor.py`, `settings.py`.
+- `agent_runs` table and `llm_calls.agent_run_id` (migration `0003`).
+- `eval/golden/routing.yaml` (14 questions) and `scripts/run_routing_eval.py`.
+- `docs/agent-orchestration.md`.
+
+### Fixed
+- `docker-compose.yml` never forwarded `LLM_TIMEOUT_S`, `LLM_MAX_OUTPUT_TOKENS` or
+  `LLM_REPAIR_ATTEMPTS`, so setting them in `.env` did nothing at all. Found while
+  building m14, deferred because the file belonged to an uncommitted m13, fixed here.
+
+### Measured
+- **14/14 on the routing set**, from 9/14 on the first run. By route: `sql` 3/3,
+  `rag` 4/4, `geo` 1/1, `multi` 3/3, `refuse` 3/3. The fixture was written and committed
+  before `api/services/agent/` contained a line.
+- **Three of the five first-run failures were a bug in the grader, not the agent.** The
+  refusal detector matched `I can't` with an ASCII apostrophe; `gpt-oss` writes `I can\u2019t`
+  with a typographic one. The abstention rate was silently pinned at zero.
+- **A local 20B emits invalid tool calls.** Deterministically at temperature 0, five
+  calls deep, `gpt-oss:20b` produced a JSON key with no value and Ollama answered
+  HTTP 500 -- discarding five correct steps. A provider failure mid-run now returns the
+  completed steps labelled `failed`.
+- **Batching a tool halved the turns.** `area_summary` took one area name and the model
+  called it once per neighbour -- four round trips at 7-21 s each, and the run died on
+  step 6. Taking a list made the same question three turns instead of six.
+- **The model invented a currency.** Given three AED medians it produced a table headed
+  "USD" with `$` on every figure: every number real, each wrong by the exchange rate.
+  Only the label was false, which is why nothing else catches it.
+- Grounding warnings across five runs of the set: **2/14 -> 2/14 -> 1/14 -> 1/14 -> 0/14**.
+  Three false-positive classes were removed (years quoted from the question; a space used
+  as a thousands separator). Two of the flags were TRUE positives and each found a real
+  bug: hard-coded figures in this project's own system prompt, and the rent error below.
+- Latency: 87 s for 14 questions at host load 5.03, **144 s for the same code** at 7.80.
+  Tool time is milliseconds; essentially all of the wall clock is the model.
+
+### The route was right and the answer was 4.6x wrong
+`R-05` asks what a typical Dubai Marina apartment rents for. The agent routed it
+perfectly -- resolved `Dubai Marina` to `Marsa Dubai`, called the SQL tool, never touched
+the corpus -- and answered **AED 550,010**. The true per-property median is
+**AED 120,000**.
+
+`area_summary` exposed `AVG(annual_amount)` as `avg_annual_rent`. That column is the
+CONTRACT total, and one contract in that area covers up to **232 properties**, each row
+carrying the full portfolio amount. It is the trap this changelog already documented at
+v0.5.0 and the retrieval golden set documents as G-02, re-introduced by a new tool.
+
+The routing eval passed it, correctly: it grades the ROUTE. This is the clearest possible
+demonstration of that limitation, so it is recorded rather than quietly fixed. The tool
+now returns `typical_annual_rent_per_property` and the raw mean is renamed
+`avg_contract_annual_amount` -- a name that says what the column actually is.
+
+### One definition of a number
+The SQL moved out of `routers/areas.py` and `routers/communities.py` into
+`services/market.py`, and both the routers and the tool handlers call it. The entire
+argument for routing numeric questions to SQL instead of prose is that SQL is *exact*; if
+the agent's count and the endpoint's count could drift apart, that argument is worthless.
+
+### Routing is the mitigation
+m14 wrote a false fact into a public note and the system answered from it with every
+grounding check green -- because the answer was faithful to a corpus that was wrong.
+Verification cannot catch that. `R-01` in the routing set is that question, and it now
+routes to `COUNT(*)` and never touches the corpus.
+
 ## v0.8.0 - Grounded answers over the retrieval layer (2026-08-29)
 
 Retrieval returned chunks. This turns them into answers that can be checked -- and, on
