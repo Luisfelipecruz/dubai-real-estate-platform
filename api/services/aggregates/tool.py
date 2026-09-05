@@ -1,9 +1,8 @@
 """The tenth tool: its argument model, its description, and its handler.
 
 All of it lives here rather than in `services/agent/tools.py` so that registering it is
-three lines in that file instead of sixty. That is not tidiness -- `tools.py` is claimed by
-an uncommitted milestone and cannot be edited yet (see `docs/dataset-aggregates.md` §4), so
-everything that CAN be built and tested ahead of the wiring is built and tested here.
+three lines in that file instead of sixty, and so the argument model, the description and
+the handler can be tested together without loading the whole tool registry.
 
 WHY THE DESCRIPTION IS THE LOAD-BEARING PART
 ---------------------------------------------
@@ -15,12 +14,10 @@ are failures that were measured before they were written down.
 
 WHY A REFUSAL COMES BACK AS DATA AND NOT AS is_error
 ------------------------------------------------------
-`tools.ToolFailed` is the repository's mechanism for a decline: it becomes a `tool_result`
-with `is_error: true`. This handler does not raise it, and the reason is the constraint
-above -- `tools.run` catches `ToolFailed` by name, so using it would make this tool depend
-on an edit inside a file this milestone must not touch. A handler that only behaves
-correctly if someone remembers a second one-line change in a blocked file is a handler that
-will be wired wrong. So a refusal is returned as `{"refused": true, "reason": ...}` and the
+`tools.ToolFailed` is the registry's mechanism for a decline: it becomes a `tool_result`
+with `is_error: true`. This handler does not raise it, so that the module stays independent
+of the registry it is plugged into -- nothing here needs `tools.run` to catch a particular
+exception by name. A refusal is returned as `{"refused": true, "reason": ...}`, and the
 payload carries the recovery path either way.
 
 Whoever finishes this may prefer the other shape. It is one line in `tools.run`:
@@ -47,6 +44,13 @@ from services.aggregates.spec import DATASETS, AggregateRefused, dataset_spec
 #: dataset does offer. Closing it in the schema means constrained decoding cannot emit a
 #: key that does not exist anywhere; refusing the mismatch means the model is told which
 #: ones it could have asked for.
+#: Dimensions this tool ACCEPTS but never computes: it answers them with the name of the
+#: tool that does. Kept as data so the schema, the handler and the test cannot disagree --
+#: `test_every_dimension_in_the_schema_is_closed_except_property_type` asserts the schema
+#: enum is exactly the computable dimensions PLUS these, and that none of these ever
+#: reaches `queries.breakdown`.
+ROUTED_ELSEWHERE: dict[str, str] = {"area_name": "list_areas"}
+
 MEASURE_KEYS: tuple[str, ...] = tuple(
     sorted({key for name in DATASETS for key in dataset_spec(name).measures})
 )
@@ -104,12 +108,14 @@ class DatasetAggregateArgs(BaseModel):
         "the value does not exist the tool lists the ones that do -- it never returns a "
         "count of zero for a filter that cannot be applied.",
     )
-    breakdown_by: Literal["year", "property_type"] | None = Field(
+    breakdown_by: Literal["year", "property_type", "area_name"] | None = Field(
         None,
         description="Split the metric into groups instead of returning one number. Use "
         "this for 'which type is most expensive' or 'how has this changed'. Each group "
         "carries its own row count, and a group too small to support the metric reports "
-        "no value rather than a misleading one.",
+        "no value rather than a misleading one. "
+        "`area_name` is accepted ONLY so this tool can tell you to use list_areas "
+        "instead -- it does not compute a per-area breakdown.",
     )
 
 
@@ -120,6 +126,8 @@ DESCRIPTION = (
     "Prefer this over retrieved text for any number. "
     "This tool is NOT area-scoped: for a single district use area_summary or "
     "area_price_history, and do not call this one per area. "
+    "For 'which areas had the most ...' -- a RANKING across areas -- use list_areas, "
+    "which is built for exactly that and returns them ordered. "
     "It refuses, with the values that do exist, rather than returning a zero for a filter "
     "that cannot be applied -- so a zero from it is a real zero. "
     "Every answer carries the row counts it was computed over and says when a period is "
@@ -158,6 +166,36 @@ async def dataset_aggregate(
     Positional-or-keyword rather than keyword-only, because `tools.run` dispatches with
     `handler(conn, **parsed.model_dump())` and the model dump is a plain dict.
     """
+    # ROUTING, NOT VALIDATION.
+    #
+    # `area_name` is deliberately not a dimension of this tool: `list_areas` already
+    # ranks areas by activity, and two tools answering one question is precisely what the
+    # routing eval grades.
+    #
+    # But the schema enforced that decision by REJECTING the argument, and a rejection is
+    # not a redirection. Asked "Which areas had the most transactions in 2024?", the model
+    # sent breakdown_by="area_name" -- the correct instinct, expressed correctly -- and
+    # got back "Input should be 'year' or 'property_type'". Nothing in that sentence names
+    # the tool that does the job, so the run gave up and refused a question the data
+    # answers easily. Measured twice: once on that question, once inside the 146.9 s
+    # Business Bay run.
+    #
+    # So the argument is now accepted and answered with the route. This is the same shape
+    # as every other decline in this module -- data, with the recovery path attached --
+    # and the same lesson as resolve_area_name listing the names that DO exist.
+    if breakdown_by in ROUTED_ELSEWHERE:
+        return {
+            "refused": True,
+            "reason": (
+                "This tool aggregates over a whole dataset and does not break down by "
+                "area. Use list_areas instead: it ranks areas by transaction, rent or "
+                "valuation count and returns them in order, which is what a 'which "
+                "areas' question needs. For ONE named district, use area_summary."
+            ),
+            "use_instead": ROUTED_ELSEWHERE[breakdown_by],
+            "call_it_like": {"order_by": "transactions", "limit": 10},
+        }
+
     try:
         if breakdown_by is not None:
             groups = await queries.breakdown(

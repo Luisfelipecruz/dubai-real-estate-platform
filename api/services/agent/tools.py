@@ -1,39 +1,36 @@
-"""The tool layer: what the agent can actually do, and how it is told to choose.
+"""The tool layer: what the agent can do, and how it is told to choose.
 
-WHY NINE TOOLS AND NOT THIRTY-THREE
-------------------------------------
-The platform serves 33 REST operations. Exposing all of them would be the obvious move
-and would be wrong twice. Every tool description is input tokens on EVERY turn of every
-run, so thirty-three descriptions is a standing tax paid whether or not any of them is
-used; and a model choosing between thirty-three near-identical options chooses badly.
-Operations that differ only by filter parameters collapse into one tool that takes those
-parameters.
+TEN TOOLS, NOT THIRTY-THREE
+---------------------------
+The platform serves 33 REST operations, and exposing all of them would be wrong twice.
+Every tool description is input tokens on every turn of every run, so it is a standing
+cost paid whether or not the tool is used; and a model choosing between thirty-three
+near-identical options chooses badly. Operations differing only by filter parameters
+collapse into one tool that takes those parameters.
 
-Nine tools, in four categories. The category is not decoration -- `eval/golden/routing.yaml`
+The four categories -- sql, rag, geo, meta -- are not decoration. The routing fixture
 grades a question by which category answered it, so a numeric question served from prose
 is a measurable failure rather than an impression.
 
-WHERE ROUTING IS ACTUALLY ENFORCED
------------------------------------
-In the DESCRIPTIONS, not in the system prompt. The sentence "prefer this over retrieved
-text for any number" sits on the tools that produce numbers, which is the moment the
-model is deciding. A system prompt describing all nine tools at once is read before the
-question is understood and competes with everything else in the prompt.
+ROUTING IS ENFORCED IN THE DESCRIPTIONS, NOT THE SYSTEM PROMPT
+---------------------------------------------------------------
+"Prefer this over retrieved text for any number" sits on the tools that produce numbers,
+which is where the model is at the moment it decides. A system prompt describing all ten
+at once is read before the question is understood and competes with everything else in
+the prompt.
 
-This matters more than style. m14 pushed three prompt injections through the public
-`POST /notes` endpoint (M-20). Two were ignored. The third wrote a false sentence about
-transaction volume as ordinary prose and the system answered from it with every grounding
-check green -- because the answer was faithful to a corpus that was wrong. Verification
-cannot catch that. Keeping the question away from prose in the first place can, and that
-is what these descriptions are for.
+This matters more than style. Verification can prove an answer is faithful to the corpus;
+it cannot prove the corpus is right. A false sentence written into an indexed note
+produces a confident answer with every grounding check green, and nothing downstream can
+catch it. Keeping the question away from prose in the first place can, and that is what
+these descriptions are for.
 
 THE ARGUMENTS ARE VALIDATED, NOT TRUSTED
 -----------------------------------------
-Each tool's parameters are a Pydantic model, and the JSON Schema handed to the provider
-is generated from that same model by `strict_json_schema` -- the identical helper that
-builds /ask's answer schema. Both backends constrain generation against it, and the model
-is then re-validated on the way in. Constrained decoding makes bad arguments rare; it is
-not a guarantee, and a tool that trusts its inputs because the schema was strict is one
+Each tool's parameters are a Pydantic model, and the JSON Schema handed to the provider is
+generated from that same model. Both backends constrain generation against it and the
+arguments are re-validated on the way in. Constrained decoding makes bad arguments rare,
+not impossible, and a tool that trusts its inputs because the schema was strict is one
 `json.loads` away from a 500.
 """
 
@@ -47,6 +44,7 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from services import market, retrieval
+from services.aggregates.tool import REGISTRATION as _AGGREGATE
 from services.llm.base import ToolSpec
 from services.llm.schema import strict_json_schema
 
@@ -98,16 +96,12 @@ class Tool:
 class AreaArg(BaseModel):
     """A LIST, not a single name, and the reason is measured.
 
-    The first version took one `area_name`. Asked "of the areas bordering Business Bay,
-    which has the highest transaction volume?", the model called it once per neighbour --
-    four separate turns for four areas, each a full round trip at 7-21 s. A six-neighbour
-    area would have exceeded AGENT_MAX_STEPS before reaching an answer, and the run
-    genuinely did die on turn 6 (see docs/agent-orchestration.md).
+    Taking one name at a time, "of the areas bordering Business Bay, which has the highest
+    transaction volume?" costs one full turn per neighbour at 7-21 s each. A six-neighbour
+    area exhausts AGENT_MAX_STEPS before it can answer.
 
-    Batching is the same principle the tool count already follows -- operations that
-    differ only by a parameter collapse into one tool -- applied to the parameter itself.
-    A tool that has to be called N times to answer one question is N-1 avoidable round
-    trips, and on a local model a round trip is the dominant cost of the whole system.
+    A tool that must be called N times to answer one question is N-1 avoidable round trips,
+    and on a local model a round trip is the dominant cost of the whole system.
     """
 
     area_names: list[str] = Field(
@@ -146,11 +140,31 @@ class ResolveArgs(BaseModel):
 
 
 class NeighborArgs(BaseModel):
+    """Arguments for the adjacency question.
+
+    THE DEFAULT IS `intersects`, AND THAT IS THE WHOLE OF THE CORRECTNESS HERE.
+
+    `ST_Touches` is the strict DE-9IM case: boundaries meet and interiors do not. On this
+    data the 614 adjacent pairs split 483 touching and 131 overlapping, and the 131 are
+    digitisation slivers rather than shared territory -- Marsa Dubai appears among them
+    four times, with overlaps of 1.08, 0.20, 0.02 and 0.01 m2 against a polygon of roughly
+    9 km2. Under the strict predicate one square metre of surveyor error is enough to make
+    the tool report that Dubai Marina borders nothing, faithfully and falsely.
+
+    `intersects` is the union of both cases and therefore complete at 614. For the question
+    a person is actually asking -- what is next to this? -- completeness is the property
+    that matters. The strict predicate stays reachable by name, because the DE-9IM
+    distinction is real and `GET /areas/{name}/neighbors` exposes it.
+    """
+
     area_name: str = Field(..., description="DLD area name to find the neighbours of.")
     predicate: Literal["touches", "intersects", "overlaps"] = Field(
-        "touches",
-        description="touches = boundaries meet (use this for 'borders'); intersects = "
-        "any shared point; overlaps = interiors intersect.",
+        "intersects",
+        description="Leave this alone unless you specifically need the strict case. "
+        "intersects = shares any point, which is what 'borders', 'next to' and "
+        "'surrounding' mean; touches = boundaries meet AND interiors do not, which "
+        "excludes real neighbours whose polygons overlap by a sliver; overlaps = "
+        "interiors cross, which on this data means a digitisation artefact.",
     )
 
 
@@ -160,6 +174,16 @@ class ListAreasArgs(BaseModel):
     )
     order_by: Literal["transactions", "rents", "valuations"] = Field(
         "transactions", description="Which count to rank by."
+    )
+    year: int | None = Field(
+        None,
+        ge=1900,
+        le=2100,
+        description="Restrict the counts to one calendar year. SET THIS whenever the "
+        "question names a year: without it the ranking covers 1977-2026 and answers a "
+        "different question from the one that was asked. If the dataset you are ranking "
+        "by holds no rows for that year, the tool says so instead of returning a table "
+        "of zeros.",
     )
 
 
@@ -241,12 +265,11 @@ async def _area_summary(conn: AsyncConnection, area_names: list[str]) -> dict:
                 "transactions": summary.transactions.count,
                 "avg_transaction_price": summary.transactions.avg_price,
                 "rent_contracts": summary.rents.count,
-                # THE FIELD NAME IS THE FIX. This used to be `avg_annual_rent`, and the
-                # agent quoted it as a typical rent -- AED 550,010 for a Dubai Marina
-                # apartment, against a true per-property median of AED 120,000. It is
-                # the mean of a CONTRACT total, and one contract in that area covers 232
-                # properties. A name that describes the column honestly is what stops a
-                # reasonable reader from misreading it.
+                # THE FIELD NAME IS THE FIX. This is the mean of a CONTRACT total, and
+                # one contract can cover hundreds of properties -- 232 in this area. Named
+                # as a rent, it gets quoted as one: AED 550,010 for a Dubai Marina
+                # apartment against a true per-property median of AED 120,000. The honest
+                # name is what stops a reasonable reader misreading the column.
                 "avg_contract_annual_amount": summary.rents.avg_price,
                 "typical_annual_rent_per_property": await market.typical_annual_rent(
                     conn, match.resolved
@@ -322,17 +345,45 @@ async def _area_price_history(
 
 
 async def _list_areas(
-    conn: AsyncConnection, limit: int = 10, order_by: str = "transactions"
+    conn: AsyncConnection,
+    limit: int = 10,
+    order_by: str = "transactions",
+    year: int | None = None,
 ) -> dict:
-    areas = await market.list_areas(conn)
+    areas = await market.list_areas(conn, year=year)
     key = {
         "transactions": lambda a: a.transaction_count,
         "rents": lambda a: a.rent_count,
         "valuations": lambda a: a.valuation_count,
     }[order_by]
+
+    # A YEAR WITH NO ROWS IS A REFUSAL, NOT A TABLE OF ZEROS.
+    #
+    # The same rule dataset_aggregate applies, for the same reason: valuations cover seven
+    # months of 2026, so "which areas had the most valuations in 2024" has a correct
+    # ranking of 222 zeroes that reads as "no property was valued anywhere in Dubai".
+    # Ranking by a column that is uniformly zero also makes the ORDER arbitrary, so the
+    # top ten would be whichever rows the planner happened to emit first.
+    if year is not None and not any(key(a) for a in areas):
+        return {
+            "refused": True,
+            "reason": (
+                f"No {order_by} are recorded for {year}, so there is nothing to rank. "
+                f"This is a coverage gap rather than a market fact: the three datasets "
+                f"do not span the same period -- sales run 1977-2026, rent contracts are "
+                f"overwhelmingly the most recent year, and valuations cover only a few "
+                f"months of it. Call dataset_overview to see the ranges before choosing "
+                f"another year."
+            ),
+            "year": year,
+            "ordered_by": order_by,
+        }
+
     top = sorted(areas, key=key, reverse=True)[:limit]
     return {
         "ordered_by": order_by,
+        "year": year,
+        "period": "all recorded years" if year is None else str(year),
         "total_areas": len(areas),
         "currency": "AED",
         "areas": [
@@ -348,7 +399,7 @@ async def _list_areas(
 
 
 async def _area_neighbors(
-    conn: AsyncConnection, area_name: str, predicate: str = "touches"
+    conn: AsyncConnection, area_name: str, predicate: str = "intersects"
 ) -> dict:
     result, candidates = await market.community_neighbors_by_name(
         conn, area_name, predicate
@@ -383,10 +434,12 @@ async def _area_neighbors(
             "total": 0,
             "neighbors": [],
             "note": "THE QUERY SUCCEEDED AND THE ANSWER IS NONE. This area's polygon "
-            "shares a boundary with no other community. That is a real geographic fact, "
+            "shares no point with any other community. That is a real geographic fact, "
             "not a missing-data problem and not a tool failure -- it is what an "
             "artificial island, an enclave or a coastal parcel looks like. Report that "
-            "it borders no other community.",
+            "it borders no other community. With the default `intersects` predicate this "
+            "is a strong statement: the list is empty only when the polygon shares no "
+            "point at all with any other.",
         }
     return {
         "area_name": result.community_name_en,
@@ -398,7 +451,12 @@ async def _area_neighbors(
         ],
         "note": "Computed with PostGIS from the boundary polygons, not read from any "
         "document. Names are the polygon spellings and are upper-case; pass them to "
-        "other tools as-is, the lookups are case-insensitive.",
+        "other tools as-is, the lookups are case-insensitive. "
+        "A shared_boundary_m of 0 does NOT mean 'not really a neighbour': it means the "
+        "two polygons meet by overlapping slightly rather than by running along a shared "
+        "edge, which on this data is surveyor error of a square metre or so. Every entry "
+        "in this list is a neighbour. Do not filter them by that number or describe the "
+        "zero ones as anything less than bordering.",
     }
 
 
@@ -545,8 +603,12 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Rank Dubai areas by how much activity they have -- transactions, rent "
             "contracts or valuations. Use this for 'which areas are busiest', 'where are "
-            "most sales', or any question comparing areas across the whole city rather "
-            "than asking about one."
+            "most sales', 'which areas had the most X', or any question comparing areas "
+            "across the whole city rather than asking about one. "
+            "THIS is the tool for a per-area ranking -- dataset_aggregate does not break "
+            "down by area and will send you here. "
+            "Pass `year` whenever the question names one: the default ranking spans "
+            "1977-2026."
         ),
         category="sql",
         arguments=ListAreasArgs,
@@ -558,7 +620,9 @@ TOOLS: tuple[Tool, ...] = (
             "Which communities physically border a given area, computed from boundary "
             "polygons with PostGIS. Use this for anything about adjacency, bordering, "
             "surrounding or nearby districts. This is a geometric fact and cannot be "
-            "answered from documents -- do not search for it."
+            "answered from documents -- do not search for it. "
+            "Leave `predicate` unset: the default already means 'shares any boundary "
+            "point', which is what a person asking about borders means."
         ),
         category="geo",
         arguments=NeighborArgs,
@@ -616,6 +680,15 @@ TOOLS: tuple[Tool, ...] = (
         category="meta",
         arguments=NoArgs,
         handler=_dataset_overview,
+    ),
+    # Registered from `services/aggregates/tool.py`, which owns the argument model, the
+    # description and the handler, and is tested there. Only the registration lives here.
+    Tool(
+        name=_AGGREGATE["name"],
+        description=_AGGREGATE["description"],
+        category=_AGGREGATE["category"],
+        arguments=_AGGREGATE["arguments"],
+        handler=_AGGREGATE["handler"],
     ),
 )
 

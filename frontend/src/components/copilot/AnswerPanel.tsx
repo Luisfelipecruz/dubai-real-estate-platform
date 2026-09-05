@@ -4,28 +4,26 @@ import { AlertTriangle, Ban, FileWarning, Info } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { OutcomeBadge } from "./OutcomeBadge";
 import { CategoryChips } from "./CategoryChips";
+import { RichText } from "./RichText";
 import type { AgentOutcome } from "@/lib/copilot";
 
 /**
  * The answer, and the three cases that are not an answer.
  *
- * This component carries two of the four requirements the plan derives from
- * measurements rather than from taste (§11.4), and both are about refusing to let a
- * correct-but-unhappy result look like a bug:
+ * Two rules, both about refusing to let a correct-but-unhappy result look like a bug:
  *
- *   1. A REFUSAL MUST LOOK LIKE A SUCCESS. It is a 200. On the golden set it is the
- *      right result for exactly the two questions m13a proved unanswerable, and M-17
- *      recorded that the system refused on those and only those. A red error box would
- *      say the opposite of what was measured.
+ *   1. A REFUSAL MUST LOOK LIKE A SUCCESS. It is a 200, and on the golden set it is the
+ *      right result for the questions the data genuinely cannot answer. A red error box
+ *      would say the opposite of what the system just did well.
  *
- *   2. THE EMPTY ANSWER MUST BE VISIBLE. M-47: 2–3 of 40 agent runs return
- *      `outcome: answered` with an empty body, always the longest runs. Rendering that
- *      as a blank card is indistinguishable from a loading state, so the one defect the
- *      milestone knows about would be the one thing the UI hides.
+ *   2. THE EMPTY ANSWER MUST BE VISIBLE. A small share of runs return
+ *      `outcome: answered` with an empty body, always the longest ones. Rendering that as
+ *      a blank card is indistinguishable from a loading state, which would hide the one
+ *      defect worth surfacing.
  *
- *      "An empty body" is `answer: null` in practice, not `answer: ""` — confirmed
- *      against a live 66-second run. Hence `(answer ?? "").trim()` below rather than
- *      `answer.trim()`, which would throw on the exact case this branch exists for.
+ *      "An empty body" is `answer: null` in practice, not `answer: ""`. Hence
+ *      `(answer ?? "").trim()` below rather than `answer.trim()`, which would throw on
+ *      the exact case this branch exists for.
  */
 export function AnswerPanel({
   outcome,
@@ -110,7 +108,7 @@ export function AnswerPanel({
           data-testid="answer-body"
           className="whitespace-pre-wrap text-sm leading-relaxed text-[--foreground]"
         >
-          {body}
+          <RichText text={body} />
         </div>
       )}
 

@@ -49,11 +49,11 @@ app.include_router(notes_router)
 #
 # Registered by name rather than by import, and tolerantly.
 #
-# Each copilot router ships in its own PR (search m13, ask m14, agent m15, voice m17)
-# and each depends on a service that may not be running: the embeddings container, a
-# local LLM, the speech stack. A missing module here is a CONFIGURATION STATE, not an
-# error -- `LLM_PROVIDER=none` on a machine with 8 GB of RAM must still serve the map,
-# and the 27 core operations above have no dependency on any of this.
+# Each copilot router is an optional feature module, and each depends on a service that
+# may not be running: the embeddings container, a local LLM, the speech stack. A missing
+# module here is a CONFIGURATION STATE, not an error -- `LLM_PROVIDER=none` on a machine
+# with 8 GB of RAM must still serve the map, and the core operations above have no
+# dependency on any of this.
 #
 # The ModuleNotFoundError is narrowed to the router module itself on purpose. A blanket
 # except would also swallow `routers.search` failing because httpx is missing, and the
@@ -61,7 +61,7 @@ app.include_router(notes_router)
 # far worse failure than a crash at startup.
 logger = logging.getLogger(__name__)
 
-COPILOT_ROUTERS = ("search", "ask", "agent", "voice")
+COPILOT_ROUTERS = ("search", "ask", "agent", "voice", "evals")
 
 
 def register_copilot_routers(application, names=COPILOT_ROUTERS, importer=import_module):

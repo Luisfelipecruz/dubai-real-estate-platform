@@ -1,5 +1,142 @@
 # Changelog
 
+## v0.14.0 - The eval harness gets an endpoint, and the score gets an expiry date (2026-09-05)
+
+The evaluation harness had no HTTP surface: 36 operations and not one returned a result,
+so `/evals` printed the make commands instead of numbers. This closes that, and the first
+thing the endpoint did was measure a suite nobody had re-run since the tenth tool was
+registered. **45 REST operations - 503 API tests, 229 frontend tests.**
+
+### Added
+
+- **`GET /evals/latest`** -- the last recorded run joined to every floor in
+  `eval/thresholds.yaml`, with three states per floor. `not_measured` is not a pass and not
+  a failure: a `--suite agent` run measures nothing under `retrieval.`, and collapsing that
+  into either neighbour publishes a gate nobody ran.
+- **`eval_results` (migration `0006`)** -- one row per recorded run. A table rather than a
+  JSON file because `eval/` is mounted read-only on purpose, and because one number with no
+  history cannot say whether the system is improving.
+- **A staleness fingerprint.** Every result stores the tool names registered when it ran and
+  the endpoint compares them with the live registry on every read. `stale`, `added_since`
+  and `removed_since` -- with `known: false` as a third state, because a result with no
+  fingerprint is not a result that has not drifted.
+- `--record`, `--record-from` and a `_meta` block in `--out`. `--record` refuses a `--only`
+  run: `--only A-01 --record` would publish `answer_accuracy: 1.000` over a denominator of
+  one, and once the row exists no rendering can undo it.
+- **R-15 and R-16** in `eval/golden/routing.yaml`, the first two questions in that file that
+  name no area, linked from A-18 and the new A-41. Both passed on the first run.
+
+### Changed
+
+- **`/evals` renders the gate instead of printing commands.** The commands stay, because
+  the endpoint reports a run and cannot start one -- and two of the five it used to print,
+  `make eval-answers` and `make eval-gate`, do not exist and never did.
+- `make eval` passes `--record`. The single-suite targets deliberately do not: a partial
+  suite must not become the deployment's published score.
+- `COPILOT_ROUTERS` gains a fifth name. `test_registration_list_is_the_full_planned_set`
+  fired again, and this time the answer was the one the rule intends -- a new module, with
+  the reasoning written into the test's docstring rather than around it.
+
+### Fixed
+
+- **`area_neighbors` defaulted to a predicate that hid real neighbours.** `ST_Touches` is
+  the strict DE-9IM case, and of 614 adjacent community pairs 483 touch while 131 overlap
+  by a sliver. Marsa Dubai is in that set four times -- its largest overlap is 1.08 m2
+  against a polygon of roughly 9 km2 -- so the tool answered "Dubai Marina borders no other
+  community", a complete and confident false sentence. The default is now `ST_Intersects`;
+  the strict predicate is still reachable by name. **The four spatial questions in
+  `eval/golden/answers.yaml` still assert `ST_Touches` and were deliberately NOT changed to
+  match -- see Measured, below.**
+- **`list_areas` could not restrict a ranking to a year**, so "which areas had the most
+  transactions in 2024" was answered with a 1977-2026 lifetime ranking. It now takes a
+  `year`, and a year with no rows is a refusal rather than a table of zeroes -- the same
+  coverage rule `dataset_aggregate` applies, for the same reason.
+- **`dataset_aggregate` rejected `breakdown_by="area_name"` instead of redirecting it.** The
+  model's instinct was right and correctly expressed; the schema answered "Input should be
+  'year' or 'property_type'", which names no alternative, and the run gave up on a question
+  the data answers easily. It now routes the caller to `list_areas`.
+- **`record_result` reused a connection pool across event loops.** `asyncio.run` builds a
+  new loop each call and `resolve_truths` had already used the shared engine in an earlier
+  one, so the write raised `got Future attached to a different loop` *after* the entire
+  suite had run and every model call had been paid for. Caught by running
+  `--suite truths --record`, which is seconds, before trusting it at the end of a
+  thirty-minute run.
+
+### Measured
+
+- **First full suite since `dataset_aggregate` was registered. All 8 floors pass.**
+  Answers **33/41 = 0.805**, against 30/40 = 0.750 previously. Routes 9/10 = 0.900. Retrieval
+  dense: top-1 0.850, hit@5 0.900, MRR 0.881. The three 1.0 properties held -- no
+  fabrication on 11 unanswerable questions, no named decoy hit, and the injection question
+  never reached the corpus.
+- **The route denominator is 10 and eleven questions are linked.** A-26 -- the hardest
+  linked question in the set, a spatial predicate joined to an aggregate -- returned
+  `HTTP 504` when Ollama did not respond within 120 s, and an errored run carries no
+  `routing_id`, so it left `route_n` rather than failing in it. Graded as a failure the
+  rate is 0.818; dropped, 0.900. Recorded, not decided: a timeout is not a routing
+  failure, but a silently shrinking denominator is worse than one.
+- **The neighbours tool and its fixture no longer measure the same thing.** All four
+  spatial questions assert `ST_Touches`; the tool's default is now `ST_Intersects`, which
+  returns a superset, so A-23 and A-25 score `partial` for naming real neighbours the
+  fixture omits. The fixture was NOT edited to match: rewriting ground truth so the code
+  under test passes is the failure this harness exists to prevent, and a good argument for
+  the code change does not convert into one for rewriting the rubric. The disagreement is
+  left standing as the result.
+
+## v0.13.0 - The machinery, hidden; the rates, over time (2026-08-30)
+
+Four milestones had a half each, all of them waiting on files that belonged to unmerged
+branches. #31-#36 merged the backlog and every one of those files became ordinary. This
+release is what the halves do once they can reach each other. **44 REST operations - 479
+API tests, 189 frontend tests, ten agent tools.**
+
+### Added
+
+- `GET /agent/stream` -- the same run as `POST /agent/query`, reported as it happens.
+  `step` and `result` events in the shapes `frontend/src/lib/stream.ts` had already been
+  parsing and unit-testing since v0.12.0 with no server on the other end. `done` is always
+  sent, including on failure, because a stream that stops without it is indistinguishable
+  from a network drop.
+- `GET /agent/runs/timeseries`, `GET /agent/health`, `GET /agent/tools/stats` -- rates over
+  time, the two most recent buckets compared with their denominators, and per-tool failure
+  attribution.
+- `dataset_aggregate`, the tenth tool -- dataset-wide totals, medians and extremes. It
+  answered its first live question by routing to itself unprompted and returning 35,577
+  villa transactions, which is the golden value for an eval question that used to be
+  DECLINED.
+- `agent_runs.stop_reason` (migration `0004`) and `agent_tool_calls` (migration `0005`).
+
+### Changed
+
+- **`/copilot` no longer lays the machinery in front of the answer.** The tool trace moved
+  behind a one-click disclosure inside `ConversationTurn`; what replaces it is
+  human-language progress DERIVED from real events -- no timer, no scripted sequence, and
+  nothing to say until something has happened.
+- **`/copilot/runs` is a panel, not a log.** Trends with their sample sizes, four metrics
+  over a selectable window, and per-tool attribution. An interval with no runs shows no
+  rate rather than 0%; a percentile over fewer than 20 runs is not shown at all.
+- `jest.config.ts` counts coverage for `src/components/conversation/` and
+  `src/components/observability/`, which had been tested with their coverage uncounted
+  for two milestones.
+
+### Fixed
+
+- **M-47, the run that gathered everything and said nothing.** 8 of 147 answered runs
+  returned a null answer. It was two bugs, not one, and `finish_reason` separated them --
+  a value the system computed on every run and persisted nowhere. A blank final turn now
+  produces an honest sentence carrying the findings, and the reason lands in the warnings.
+- A `trend()` ordering bug that reported two equal rates over one run and three as `flat`
+  -- a conclusion the sample cannot support. Caught by the milestone's own live invariant.
+
+### Known not to be met
+
+- Plan §12.7 gate 1: the first human-readable status arrives at **10.1 s**, not under two.
+  There is nothing to report until the model has chosen a tool, and on a local 20B that
+  decision is the ten seconds. Measured, not estimated -- see `docs/conversational-surface.md`.
+- Plan §13.6 gate 5: no threshold from `eval/thresholds.yaml` is shown with its live state.
+  It needs `GET /evals/latest`.
+
+
 ## v0.12.0 - The evidence, rendered (2026-08-30)
 
 Four milestones built things that could only be seen from a terminal. m14 checked citations

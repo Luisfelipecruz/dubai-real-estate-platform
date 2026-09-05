@@ -1,25 +1,71 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { AlertCircle, Send } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertCircle, Send, Square } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AnswerPanel } from "@/components/copilot/AnswerPanel";
 import { CitationList } from "@/components/copilot/CitationList";
-import { EvidenceTrace } from "@/components/copilot/EvidenceTrace";
 import { RunMeta } from "@/components/copilot/RunMeta";
 import { RunProgress } from "@/components/copilot/RunProgress";
-import { probeStreaming } from "@/lib/stream";
+import { ConversationTurn } from "@/components/conversation/ConversationTurn";
+import {
+  INITIAL_PROGRESS,
+  markIncomplete,
+  progressFromResponse,
+  reduceProgress,
+  type ProgressState,
+} from "@/lib/progress";
+import {
+  probeStreaming,
+  streamAgentRun,
+  StreamIncomplete,
+  type StreamEvent,
+} from "@/lib/stream";
 import {
   CopilotError,
   runAgent,
   runAsk,
   type AgentResponse,
+  type AgentStep,
   type AskResponse,
 } from "@/lib/copilot";
 import { cn } from "@/lib/utils";
 
 type Route = "agent" | "ask";
+
+/**
+ * The questions offered on the empty page.
+ *
+ * **Every one of these was run against the live agent before it was put here**, and the
+ * list is shorter than the candidate set because three candidates did not survive. A
+ * suggested question is a promise: the page is telling a first-time visitor "this is the
+ * kind of thing I answer well", and one that refuses after two minutes teaches them the
+ * opposite of what it meant to.
+ *
+ * The one that had to go was the old placeholder — "Of the areas bordering Business Bay,
+ * which had the highest transaction count in 2024?" It reads beautifully and it is the
+ * best description of what the tool layer is *for*. Measured: 146.9 seconds, seven steps,
+ * six tool calls, two of them failures, and it ended in "I'm sorry, but I can't answer
+ * that." It was the first thing anyone read on this page.
+ *
+ * `shows` is not decoration. It is why the question earns a slot, and it is rendered, so
+ * a visitor learns what the system can do rather than just what to type.
+ */
+const EXAMPLES: { q: string; shows: string }[] = [
+  {
+    q: "How many villa transactions are in the dataset?",
+    shows: "A dataset-wide count. One tool call, no area involved — 7.6 s measured.",
+  },
+  {
+    q: "How many valuations were recorded in 2024?",
+    shows: "The valuations only cover 2026. Watch it refuse rather than answer zero.",
+  },
+  {
+    q: "What was the median sale price in Dubai Marina in 2024?",
+    shows: "'Dubai Marina' is not a Land Department area. It resolves the name first.",
+  },
+];
 
 /**
  * The copilot page.
@@ -42,6 +88,17 @@ export default function CopilotPage() {
   const [agentResult, setAgentResult] = useState<AgentResponse | null>(null);
   const [askResult, setAskResult] = useState<AskResponse | null>(null);
   const [canStream, setCanStream] = useState(false);
+  // The conversational surface is DRIVEN by this and nothing else: `progress` only
+  // ever changes because an event arrived. There is no timer anywhere on this page, which
+  // is the guarantee `progress.ts` was built to make keepable.
+  const [progress, setProgress] = useState<ProgressState>(INITIAL_PROGRESS);
+  const [asked, setAsked] = useState("");
+  // The per-step trace from the `done` event. The streaming path used to pass [] to
+  // ConversationTurn, so opening the evidence printed "No steps recorded -- the model
+  // answered without calling a tool" under a status list naming the step that ran.
+  const [streamedSteps, setStreamedSteps] = useState<AgentStep[]>([]);
+  // Lets the user stop waiting. It does NOT stop the run -- see `stop()`.
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     // Asks the LIVE API whether it can stream, rather than assuming. Today this is false
@@ -49,19 +106,89 @@ export default function CopilotPage() {
     probeStreaming().then(setCanStream);
   }, []);
 
-  async function submit(event: React.FormEvent) {
+  function submit(event: React.FormEvent) {
     event.preventDefault();
-    const q = question.trim();
+    void ask(question.trim());
+  }
+
+  /**
+   * Stop waiting for the current run.
+   *
+   * **This does not cancel the run**, and the button must never imply that it does. The
+   * server treats a disconnected client as a client that left: `/agent/stream` explicitly
+   * does not cancel the executor task, because the run is most of a minute of real work
+   * and it still has an `agent_runs` row to write. So the honest description is that the
+   * page stopped watching, and that is what the message says.
+   */
+  function stop() {
+    abortRef.current?.abort();
+  }
+
+  async function ask(q: string) {
     if (q.length < 2 || busy) return;
+    setQuestion(q);
 
     setBusy(true);
     setError(null);
     setAgentResult(null);
     setAskResult(null);
+    setProgress(INITIAL_PROGRESS);
+    setStreamedSteps([]);
+    setAsked(q);
 
     try {
-      if (route === "agent") setAgentResult(await runAgent(q));
-      else setAskResult(await runAsk(q));
+      if (route === "agent" && canStream) {
+        // The streaming path. Events are reduced into human-language progress as they
+        // arrive; the machinery stays behind the evidence toggle inside ConversationTurn.
+        let state = INITIAL_PROGRESS;
+        const collected: StreamEvent[] = [];
+        const controller = new AbortController();
+        abortRef.current = controller;
+        try {
+          await streamAgentRun({
+            question: q,
+            signal: controller.signal,
+            onEvent: (event) => {
+              collected.push(event);
+              if (event.type === "done" && event.steps) setStreamedSteps(event.steps);
+              state = reduceProgress(state, event);
+              setProgress(state);
+            },
+          });
+        } catch (streamErr) {
+          // An abort is a decision the user made, not a failure. It reuses the incomplete
+          // state because that is exactly what it is: real steps, no conclusion.
+          if ((streamErr as Error)?.name === "AbortError") {
+            setProgress(
+              markIncomplete(
+                state,
+                "You stopped watching this run. It is still running on the server and " +
+                  "will finish and be recorded — stopping only ended the page's wait.",
+              ),
+            );
+            return;
+          }
+          // A body that closed without `done` is NOT a finished run, and saying so is
+          // rule 3. Anything else is a real failure and goes to the error card.
+          if (streamErr instanceof StreamIncomplete) {
+            setProgress(
+              markIncomplete(state, streamErr.message),
+            );
+          } else {
+            throw streamErr;
+          }
+        }
+        // The `done` event carries everything the non-streaming response does except the
+        // per-step trace, which arrived as `step`/`result` events. Fetch the full record
+        // only if the user opens the evidence -- for now the trace comes from the events.
+        setAgentResult(null);
+      } else if (route === "agent") {
+        const result = await runAgent(q);
+        setAgentResult(result);
+        setProgress(progressFromResponse(result));
+      } else {
+        setAskResult(await runAsk(q));
+      }
     } catch (err) {
       // A 503 means the LLM layer is off or unreachable and the remedy is a config
       // change; a 502 means the provider answered with something unusable and the remedy
@@ -72,6 +199,7 @@ export default function CopilotPage() {
         status: err instanceof CopilotError ? err.status : undefined,
       });
     } finally {
+      abortRef.current = null;
       setBusy(false);
     }
   }
@@ -93,7 +221,16 @@ export default function CopilotPage() {
           <textarea
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Of the areas bordering Business Bay, which had the highest transaction count in 2024?"
+            onKeyDown={(e) => {
+              // A textarea does not submit its form on Enter, so before this the button
+              // was the ONLY way to ask a question -- on a page whose whole job is asking
+              // questions. Enter sends; Shift+Enter still writes a newline.
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void ask(question.trim());
+              }
+            }}
+            placeholder="Ask about transactions, rents, valuations or areas — Enter to send"
             rows={3}
             aria-label="Question"
             className="w-full resize-y rounded-lg border border-[--border] bg-[--background] px-3 py-2 text-sm text-[--foreground] placeholder:text-[--muted-foreground] focus:border-[--ring] focus:outline-none focus:ring-2 focus:ring-[--ring]/30"
@@ -129,19 +266,58 @@ export default function CopilotPage() {
               ))}
             </div>
 
-            <Button type="submit" disabled={busy || question.trim().length < 2}>
-              <Send className="mr-2 h-4 w-4" />
-              {busy ? "Running…" : "Ask"}
-            </Button>
+            <div className="flex items-center gap-2">
+              {busy && route === "agent" && canStream && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={stop}
+                  data-testid="stop-run"
+                >
+                  <Square className="mr-2 h-3 w-3 fill-current" />
+                  Stop
+                </Button>
+              )}
+              <Button type="submit" disabled={busy || question.trim().length < 2}>
+                <Send className="mr-2 h-4 w-4" />
+                {busy ? "Running…" : "Ask"}
+              </Button>
+            </div>
           </div>
         </form>
       </Card>
 
-      {busy && (
-        <RunProgress
-          streaming={canStream}
-          stepsSoFar={agentResult?.steps.length ?? 0}
-        />
+      {/* What the page says when it has nothing to show yet. Before this it was a bare
+          textarea and one placeholder, which tells a visitor nothing about a system that
+          answers some shapes of question well and declines others on purpose. */}
+      {!busy && progress.status === "idle" && !askResult && !error && (
+        <section className="space-y-2" data-testid="examples">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-[--muted-foreground]">
+            Try one of these
+          </h2>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {EXAMPLES.map((ex) => (
+              <button
+                key={ex.q}
+                type="button"
+                onClick={() => void ask(ex.q)}
+                className="rounded-lg border border-[--border] bg-[--background] p-3 text-left transition-colors hover:border-[--ring] hover:bg-[--muted]"
+              >
+                <span className="block text-sm text-[--foreground]">{ex.q}</span>
+                <span className="mt-1 block text-xs text-[--muted-foreground]">
+                  {ex.shows}
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* The `ask` route is a single call with nothing to narrate, so it keeps the
+          spinner. The `agent` route does not: ConversationTurn IS its waiting state, and
+          it says what is happening rather than that something is. */}
+      {busy && route === "ask" && (
+        <RunProgress streaming={false} stepsSoFar={0} />
       )}
 
       {error && (
@@ -167,14 +343,22 @@ export default function CopilotPage() {
         </Card>
       )}
 
+      {/* The conversational surface: the answer, with the machinery one click away
+          rather than laid out in front of it. It renders on BOTH paths -- streaming from
+          live events, and non-streaming from `progressFromResponse`, which derives the
+          same events from a finished response so the two views cannot drift. */}
+      {route === "agent" && (busy || progress.status !== "idle") && (
+        <ConversationTurn
+          question={asked}
+          state={progress}
+          steps={agentResult?.steps ?? streamedSteps}
+          warnings={progress.groundingWarnings}
+          streamingAvailable={canStream}
+        />
+      )}
+
       {agentResult && (
         <div className="space-y-4">
-          <AnswerPanel
-            outcome={agentResult.outcome}
-            answer={agentResult.answer}
-            categories={agentResult.categories}
-            warnings={agentResult.grounding_warnings}
-          />
           <RunMeta
             provider={agentResult.provider}
             model={agentResult.model}
@@ -193,13 +377,6 @@ export default function CopilotPage() {
               },
             ]}
           />
-          <section className="space-y-2">
-            <h2 className="text-sm font-semibold text-[--foreground]">
-              Tool trace — {agentResult.steps.length} step
-              {agentResult.steps.length === 1 ? "" : "s"}
-            </h2>
-            <EvidenceTrace steps={agentResult.steps} />
-          </section>
         </div>
       )}
 

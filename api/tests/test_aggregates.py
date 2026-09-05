@@ -1,9 +1,9 @@
 """The five rules, and then the six blocked questions against their own golden SQL.
 
-Two halves, the same split as `test_observability.py` and for the same reason. The pure
-half pins every rule without a database, so none of them can be skipped. The live half
-proves the thing the pure half cannot: that this module answers the six questions M-44
-recorded as declined, with the value `eval/golden/answers.yaml` says is correct.
+Two halves. The pure half pins every rule without a database, so none of them can be
+skipped. The live half proves what the pure half cannot: that this module answers the six
+dataset-wide questions the agent used to decline, with the value
+`eval/golden/answers.yaml` says is correct.
 
 The live half does NOT assert a literal. It runs each question's own `ground_truth_sql` --
 hand-written against the raw tables precisely so that an expected value never comes out of
@@ -340,8 +340,8 @@ def test_an_unknown_dataset_is_refused_with_the_three_that_exist():
 
 
 def test_the_dimension_space_stays_closed():
-    """Six blocked questions, one tool. If this list grows past a handful, the design has
-    drifted back toward the thirty-three-tool version m15 rejected."""
+    """Six questions, one tool. If this list grows past a handful, the design has drifted
+    back toward exposing one tool per operation, which the tool layer exists to avoid."""
     assert DATASETS == ("transactions", "rent_contracts", "valuations")
     assert METRICS == ("count", "median", "maximum", "minimum", "total")
     assert queries.BREAKDOWN_DIMENSIONS == ("year", "property_type")
@@ -398,8 +398,8 @@ async def _golden_value(conn, question_id: str):
     return (await conn.execute(text(sql))).scalar_one()
 
 
-#: The six M-44 recorded as declined although the data answers them, each mapped to the
-#: single `aggregate()` call that answers it. One tool, six questions.
+#: The six dataset-wide questions the agent declined for want of a tool, each mapped to
+#: the single `aggregate()` call that answers it. One tool, six questions.
 BLOCKED_QUESTIONS = {
     "A-06": dict(dataset="transactions", metric="count", year=2024),
     "A-11": dict(dataset="transactions", metric="count", property_type="Villa"),
@@ -417,7 +417,7 @@ BLOCKED_QUESTIONS = {
 
 @pytest.mark.parametrize("question_id", sorted(BLOCKED_QUESTIONS))
 async def test_a_blocked_question_now_matches_its_own_golden_sql(question_id):
-    """The M-44 fix, graded the way `answers.yaml` grades everything else.
+    """Graded the way `answers.yaml` grades everything else.
 
     The expected value is the question's `ground_truth_sql`, executed here. A reload moves
     both sides together; a disagreement is a disagreement about the data, which is what
@@ -447,7 +447,7 @@ async def test_the_answer_carries_its_unit_even_for_a_count():
 
 
 async def test_the_three_datasets_do_not_cover_the_same_time_and_nothing_said_so():
-    """The finding this milestone turned up while fixing something else.
+    """The three datasets have different shapes, and nothing in the API said so.
 
     `dataset_overview` reports three row counts and the transaction date range. It does not
     say that the rent contracts are a snapshot and the valuations are one seven-month
@@ -660,12 +660,11 @@ async def test_an_unknown_breakdown_dimension_is_refused():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# THE TENTH TOOL — schema and handler, tested before the wiring exists
+# THE TOOL — schema and handler, tested independently of the registry
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# `services/agent/tools.py` is claimed by an uncommitted milestone, so the registration
-# cannot be made yet. Everything the registration would carry is here, and tested, so that
-# the blocked edit is three lines and none of them is a decision.
+# Everything the registration carries is defined and tested here, so that registering it in
+# `services/agent/tools.py` is three lines and none of them is a decision.
 
 
 def test_the_argument_schema_is_strict_and_self_contained():
@@ -703,7 +702,16 @@ def test_every_dimension_in_the_schema_is_closed_except_property_type():
     assert _enum_of(props["dataset"]) == set(DATASETS)
     assert _enum_of(props["metric"]) == set(METRICS)
     assert _enum_of(props["measure"]) == set(tool.MEASURE_KEYS)
-    assert _enum_of(props["breakdown_by"]) == set(queries.BREAKDOWN_DIMENSIONS)
+    # The schema is the COMPUTABLE dimensions plus the routing-only ones. `area_name` was
+    # added to the enum on purpose: with it closed out, the model that asked for a per-area
+    # breakdown -- the right instinct, correctly expressed -- got back "Input should be
+    # 'year' or 'property_type'", which names no alternative, and the run refused a
+    # question `list_areas` answers. Expressible-then-routed beats inexpressible.
+    assert _enum_of(props["breakdown_by"]) == set(queries.BREAKDOWN_DIMENSIONS) | set(
+        tool.ROUTED_ELSEWHERE
+    )
+    # ...and the routed ones must never reach the query layer, which cannot compute them.
+    assert not set(tool.ROUTED_ELSEWHERE) & set(queries.BREAKDOWN_DIMENSIONS)
     assert _enum_of(props["property_type"]) == set()
     assert props["property_type"]["type"] == ["string", "null"]
 
@@ -717,9 +725,8 @@ def test_the_measure_enum_is_exactly_the_measures_that_exist():
 
 
 def test_the_description_sends_area_questions_to_the_area_tool():
-    """m15's finding: a tool that has to be called once per area burns the step budget.
-    The routing rule has to be in the description, because that is what the model reads
-    while it is choosing."""
+    """A tool called once per area burns the step budget. The routing rule has to be in
+    the description, because that is what the model reads while it is choosing."""
     text_ = tool.DESCRIPTION
     assert "NOT area-scoped" in text_
     assert "area_summary" in text_

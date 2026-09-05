@@ -68,7 +68,7 @@ def test_specs_are_the_neutral_type_not_a_provider_dialect():
 def test_the_numeric_tools_tell_the_model_to_prefer_them_over_prose():
     """Routing is enforced in the DESCRIPTIONS, so this asserts the descriptions.
 
-    m14's injection finding (M-20) is the reason: a false sentence about transaction
+    The injection finding is the reason: a false sentence about transaction
     volume, written into a public note, produced a fully-verified answer because the
     answer was faithful to a corpus that was wrong. Nothing downstream catches that. The
     sentence below is what keeps the question away from prose in the first place, and a
@@ -169,8 +169,8 @@ def test_a_long_result_is_cut_and_says_so():
 async def test_resolve_area_name_finds_the_master_project_alias(client):
     """'Dubai Marina' is not in the data. The DLD files it as 'Marsa Dubai'.
 
-    The single most likely question this platform will ever be asked, and before m15 the
-    honest answer was a confident zero with an HTTP 200.
+    The single most likely question this platform will ever be asked, and the naive path
+    answers it with a confident zero and an HTTP 200.
     """
     response = await client.get("/areas/resolve", params={"name": "Dubai Marina"})
     assert response.status_code == 200
@@ -275,3 +275,111 @@ async def test_neighbours_of_an_area_with_no_polygon_declines_clearly(client):
         )
     assert is_error is True
     assert "106 of the 222" in payload
+
+
+# ── The two routing defects found by auditioning natural questions (2026-08-30) ──
+
+
+@pytest.mark.asyncio
+async def test_borders_defaults_to_intersects_and_finds_marsa_dubai_neighbours(client):
+    """The one-square-metre bug.
+
+    Asked "Which areas border Dubai Marina?", the agent answered that it borders no other
+    community. True under `ST_Touches` and false in every sense a reader cares about:
+    Marsa Dubai OVERLAPS all four of its neighbours by 1.08, 0.20, 0.02 and 0.01 square
+    metres -- surveyor slivers against a 9 km2 polygon -- which puts every one of them in
+    the `overlaps` set and none in `touches`.
+    """
+    from database import engine
+
+    async with engine.connect() as conn:
+        payload, is_error = await tools.run(
+            conn, "area_neighbors", {"area_name": "Marsa Dubai"}
+        )
+    assert is_error is False
+    # The default must be the complete predicate, not the strict one.
+    assert '"predicate": "intersects"' in payload.replace("'", '"')
+    assert "AL THANYAH FIFTH" in payload
+    assert '"total": 0' not in payload.replace("'", '"')
+
+
+@pytest.mark.asyncio
+async def test_the_strict_predicate_is_still_reachable_by_name(client):
+    """The DE-9IM distinction is real and the endpoint still teaches it. Changing the
+    DEFAULT is not the same as removing the option, and this pins that."""
+    from database import engine
+
+    async with engine.connect() as conn:
+        payload, _ = await tools.run(
+            conn,
+            "area_neighbors",
+            {"area_name": "Marsa Dubai", "predicate": "touches"},
+        )
+    assert "THE QUERY SUCCEEDED AND THE ANSWER IS NONE" in payload
+
+
+@pytest.mark.asyncio
+async def test_a_per_area_breakdown_is_routed_to_list_areas_not_rejected(client):
+    """Asked "Which areas had the most transactions in 2024?" the model sent
+    breakdown_by="area_name" -- the correct instinct -- and the closed Literal answered
+    "Input should be 'year' or 'property_type'", which names no alternative. The run gave
+    up. A decline has to carry the recovery path."""
+    from database import engine
+
+    async with engine.connect() as conn:
+        payload, is_error = await tools.run(
+            conn,
+            "dataset_aggregate",
+            {
+                "dataset": "transactions",
+                "metric": "count",
+                "breakdown_by": "area_name",
+                "year": 2024,
+            },
+        )
+    # Not a schema rejection any more: the argument parses and the answer is a route.
+    assert is_error is False
+    assert "list_areas" in payload
+    assert "Input should be" not in payload
+
+
+@pytest.mark.asyncio
+async def test_list_areas_ranks_within_one_year_when_asked(client):
+    """The other half of that fix. Routing to `list_areas` is only correct if it can
+    answer the question that was asked, and the question named a year -- without the
+    filter it would rank 1977-2026 and the model would present it as 2024.
+
+    Ground truth, straight from raw_transactions: 2024's busiest area is Al Barsha South
+    Fourth with 2,478, ahead of Business Bay on 1,453.
+    """
+    from database import engine
+
+    async with engine.connect() as conn:
+        payload, is_error = await tools.run(
+            conn, "list_areas", {"year": 2024, "limit": 3}
+        )
+    assert is_error is False
+    assert "Al Barsha South Fourth" in payload
+    assert "2478" in payload
+    # ...and it is genuinely a different ranking from the lifetime one, whose leader is
+    # Marsa Dubai. A year argument that changed nothing would be worse than none.
+    async with engine.connect() as conn:
+        lifetime, _ = await tools.run(conn, "list_areas", {"limit": 3})
+    assert "Marsa Dubai" in lifetime
+
+
+@pytest.mark.asyncio
+async def test_a_year_with_no_rows_is_refused_rather_than_ranked_as_zeroes(client):
+    """The coverage rule, applied here: valuations cover a few months of 2026, so ranking areas
+    by valuations in 2024 has a correct answer of 222 zeroes that reads as "nothing was
+    valued anywhere in Dubai". It is also an arbitrary order, since every key is equal."""
+    from database import engine
+
+    async with engine.connect() as conn:
+        payload, is_error = await tools.run(
+            conn, "list_areas", {"year": 2024, "order_by": "valuations"}
+        )
+    assert is_error is False
+    assert "refused" in payload
+    assert "coverage gap" in payload
+    assert "dataset_overview" in payload
