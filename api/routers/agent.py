@@ -439,3 +439,30 @@ async def tool_stats():
 
     async with engine.connect() as conn:
         return await obs.tool_error_attribution(conn)
+
+
+# THIS HANDLER MUST STAY BELOW `/agent/runs/timeseries`. FastAPI matches routes in
+# declaration order, so a path parameter declared first would swallow the literal segment
+# and answer `/agent/runs/timeseries` with a 404 for a run called "timeseries".
+@router.get("/agent/runs/{run_id}")
+async def run_detail(run_id: str):
+    """One run, opened up: its model turns and the tools it actually called.
+
+    The list page reports `6 tool calls (2 failed)` and cannot say which two. That number
+    is an integer on `agent_runs`; the names behind it live in `agent_tool_calls`, and
+    until this endpoint existed nothing read them back for a single run.
+
+    A missing run is a 404 rather than an empty body -- an id that was mistyped and an id
+    whose run made no tool calls are different states, and both would render as a blank
+    panel.
+    """
+    from services.observability import queries as obs
+
+    async with engine.connect() as conn:
+        try:
+            detail = await obs.run_detail(conn, run_id)
+        except obs.ObservabilityUnavailable as exc:
+            raise HTTPException(status_code=503, detail=exc.remedy) from exc
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"no agent run with id {run_id}")
+    return detail

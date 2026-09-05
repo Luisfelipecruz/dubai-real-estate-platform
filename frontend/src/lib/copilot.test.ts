@@ -12,6 +12,7 @@ import {
   formatCost,
   formatMs,
   formatPercent,
+  fetchRunDetail,
   fetchRuns,
   parseCategories,
   runAgent,
@@ -55,6 +56,32 @@ describe("request shapes", () => {
       (fetchImpl as unknown as jest.Mock).mock.calls[0][1].body as string,
     );
     expect(body.q).toBe("what does the corpus say?");
+  });
+
+  it("encodes the run id into the drill-in path", async () => {
+    // A run id is a UUID today. Interpolating it raw would still be a latent injection
+    // point the day an id gains a character that means something in a URL.
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(jsonResponse({ run: {}, tool_steps: [] })) as unknown as typeof fetch;
+    await fetchRunDetail("a b/c", fetchImpl);
+    expect((fetchImpl as unknown as jest.Mock).mock.calls[0][0]).toContain(
+      "/agent/runs/a%20b%2Fc",
+    );
+  });
+
+  it("surfaces a missing run as a 404 rather than an empty detail", async () => {
+    // A mistyped id and a run that called no tools both render as a blank panel unless
+    // the status survives the fetch.
+    const fetchImpl = jest
+      .fn()
+      .mockResolvedValue(
+        jsonResponse({ detail: "no agent run with id nope" }, 404),
+      ) as unknown as typeof fetch;
+    await expect(fetchRunDetail("nope", fetchImpl)).rejects.toMatchObject({
+      name: "CopilotError",
+      status: 404,
+    });
   });
 
   it("passes the outcome filter through to /agent/runs", async () => {

@@ -126,6 +126,17 @@ _RUN_LLM_CALLS = """
 
 _HAS_TOOL_CALLS = "SELECT to_regclass(:qualified) IS NOT NULL AS present"
 
+# Ordered by step, which is the order the loop made the calls and the order the evidence
+# trace shows the user. `id` breaks a tie that cannot occur -- step is 1-based and unique
+# per run -- and costs nothing to be certain about.
+_RUN_TOOL_CALLS = """
+    SELECT id, step, tool_name, category, arguments, ok, error, duration_ms, repeated,
+           created_at
+      FROM agent_tool_calls
+     WHERE agent_run_id = :run_id
+     ORDER BY step, id
+"""
+
 
 def _fail_if_unmigrated(exc: Exception) -> None:
     if "agent_runs" in str(exc):
@@ -394,12 +405,21 @@ async def tool_error_attribution(conn: Any) -> dict[str, Any]:
 
 
 async def run_detail(conn: Any, run_id: str) -> dict[str, Any] | None:
-    """One run, with the model turns recorded against it. `None` when there is no such run.
+    """One run, its model turns and the tools it called. `None` when there is no such run.
 
-    The `llm_calls` rows are MODEL TURNS, not tool calls, and the field is named to say so.
-    A six-tool run has as many turns as the loop took, which is a different number, and
-    reading one as the other is the mistake this drill-in exists to prevent -- so it also
-    returns `tool_steps_available`, which is `False` until migration 0005 has a producer.
+    THE TWO LISTS ARE DIFFERENT THINGS AND THE FIELDS ARE NAMED TO SAY SO. `llm_calls`
+    rows are MODEL TURNS -- one per trip to the provider. `agent_tool_calls` rows are TOOL
+    CALLS -- one per tool the model asked for. A six-tool run has as many turns as the loop
+    took, which is a different number, and reading one as the other is the mistake this
+    drill-in exists to prevent.
+
+    THREE STATES FOR THE TOOL STEPS, and the middle one is why this is not a LEFT JOIN.
+    The table may be absent (`tool_steps_available` False); present with rows for this run;
+    or present and empty for this run, which splits again -- a run that called no tools has
+    nothing to show, while a run whose `tool_calls` count is non-zero and whose steps are
+    missing ran BEFORE the producer existed. `tool_steps_recorded` distinguishes those two,
+    because "no tools were called" and "the record was never kept" render as the same empty
+    list and are opposite facts about the same run.
     """
     try:
         row = (await conn.execute(text(_RUN), {"run_id": run_id})).one_or_none()
@@ -428,18 +448,56 @@ async def run_detail(conn: Any, run_id: str) -> dict[str, Any] | None:
         )
     ).scalar_one()
 
+    tool_steps: list[dict[str, Any]] = []
+    if present:
+        steps = await conn.execute(text(_RUN_TOOL_CALLS), {"run_id": run_id})
+        tool_steps = [dict(step_row._mapping) for step_row in steps]
+
+    # The run's own counter is the check on the drill-in. `agent_runs.tool_calls` was
+    # written by the same loop that produced these rows, so a mismatch means the per-step
+    # write failed -- and a panel that showed four steps under a run reporting six calls,
+    # with nothing saying which number to believe, would be worse than showing neither.
+    claimed = run.get("tool_calls") or 0
+    recorded = bool(tool_steps) or (present and claimed == 0)
+
     return {
         "run": run,
         "model_turns": model_turns,
         "model_turn_count": len(model_turns),
+        "tool_steps": tool_steps,
+        "tool_step_count": len(tool_steps),
         "tool_steps_available": bool(present),
-        "tool_steps_note": (
-            None
-            if present
-            else "the per-step tool record for this run was not persisted; "
-            "tool_calls and tool_errors are counts only"
-        ),
+        "tool_steps_recorded": bool(recorded),
+        "tool_steps_complete": bool(recorded) and len(tool_steps) == claimed,
+        "tool_steps_note": _tool_steps_note(bool(present), tool_steps, claimed),
     }
+
+
+def _tool_steps_note(present: bool, steps: list[dict[str, Any]], claimed: int) -> str | None:
+    """The sentence that goes with an empty or short step list, or None when it agrees.
+
+    Four states, and none of them is "no tools were called" unless the run says so.
+    """
+    if not present:
+        return (
+            f"{TOOL_CALLS_TABLE} does not exist -- run `alembic upgrade head` "
+            "(migration 0005). This run reports tool_calls and tool_errors as counts only."
+        )
+    if not steps and claimed:
+        return (
+            f"This run made {claimed} tool call(s) and none were recorded. Attribution "
+            "starts at migration 0005; a run from before it cannot be broken down, and "
+            "there is nothing to backfill from."
+        )
+    if not steps:
+        return "This run called no tools. The model answered, refused or capped without one."
+    if len(steps) != claimed:
+        return (
+            f"{len(steps)} step(s) recorded against a run reporting {claimed} tool call(s). "
+            "The per-step write is best-effort and does not fail a run, so the run's own "
+            "counter is the one to trust."
+        )
+    return None
 
 
 def _as_utc(moment: datetime) -> datetime:

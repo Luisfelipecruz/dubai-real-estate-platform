@@ -1,11 +1,11 @@
 # Observability — the time dimension, and what it made visible
 
-> **Status: FINISHED 2026-08-30 (five of six gates).**
+> **Status: all six gates met.**
 > The producer writes one `agent_tool_calls` row per tool call, migration `0005` is
-> applied, three endpoints are live, and `/copilot/runs` is a panel with a window
-> selector. **Attribution was verified by forcing a tool error and watching the panel
-> name it**: `resolve_area_name`, 1 call, 1 error, 100%. Gate 5 — a threshold from
-> `eval/thresholds.yaml` shown with its live state — is the one still open. §5.
+> applied, four endpoints are live, and `/copilot/runs` is a panel with a window selector
+> and a per-run drill-in. **Attribution was verified by forcing a tool error and watching
+> the panel name it**: `resolve_area_name`, 1 call, 1 error, 100%. Thresholds arrive with
+> their live state through `GET /evals/latest`. §4.
 
 ---
 
@@ -186,39 +186,48 @@ Also worth recording, from the same read: `llm_calls` holds 699 rows of which **
 attributed to an agent run**; the other 184 are direct `/ask` traffic. The `endpoint` and
 `agent_run_id` columns migration 0003 added are doing the job they were added for.
 
-**And the thing it does NOT make visible:** which of the nine tools owns the 10.3%. Plan
-§13.6 gate 6 expected that to be the headline. It is not available, and no amount of
-frontend work substitutes for data that was never written down.
+**And the thing it could NOT make visible at the time:** which tool owned the 10.3%. That
+was not a frontend gap — the per-call records for those 213 runs were never written, and no
+amount of page work substitutes for data that does not exist. It is answerable now, for
+runs recorded since migration 0005, and §3.1 is what answers it.
 
 ---
 
-## 4. What is missing, and it is one blocker
+### 3.1 The drill-in: which tool, not how many
 
-`git status` at the time of writing: four uncommitted milestones, m19's seven files, and
-now these ten. Every path m20's remaining work needs is claimed by one of them.
+`GET /agent/runs/{run_id}` returns one run with the calls behind it. The list row reports
+`1 tool call (1 failed)`; the drill-in reports which one and what it said:
 
-| path | needed for | claimed by |
-|---|---|---|
-| `api/services/agent/executor.py` | **the producer** — one insert per tool call | m15 |
-| `api/routers/agent.py` | `/agent/runs/timeseries`, `/agent/runs/{id}`, `/agent/tools/stats` | m15 |
-| `api/main.py` + `api/tests/test_main.py` | a fifth name in `COPILOT_ROUTERS` for a new `routers/evals.py` | m17 — `test_registration_list_is_the_full_planned_set` asserts the tuple exactly |
-| `frontend/src/app/copilot/runs/` | the panel page | m18 — staged as a **directory** |
-| `frontend/src/app/evals/` | thresholds beside live measurements | m18 — staged as a **directory** |
-| `frontend/jest.config.ts` | `collectCoverageFrom` covers `src/components/copilot` only | m18 |
-| `docs/changelog.md` | the release note | m15 |
+```
+Q: How many property transactions were recorded in Atlantis Tower?
+outcome refused | 1 call, 1 error | steps recorded 1 | complete
 
-The last one is worth naming: the new component directories are **not** in
-`collectCoverageFrom`, so their tests run and their coverage is not counted. `jest.config.ts`
-is m18's file. One line, in #35.
+  1  resolve_area_name   meta   FAILED   407ms
+     No Dubai area matches 'Atlantis Tower'. The closest names that DO exist are: ...
+```
 
-So the milestone stops at the seam: `api/services/observability/`, `api/models/`-adjacent
-free paths, `frontend/src/lib/observability*.ts` and
-`frontend/src/components/observability/` are claimed by no manifest and swept by no `git
-add` argument in §A.3–§A.7 — verified with `git add --dry-run`, not assumed.
+That is the refusal made legible as **correct**. The count alone reads as a fault; the
+message the model was shown reads as the tool doing its job and the loop respecting it.
+
+**Two lists, two counts, and they are not the same number.** `model_turns` comes from
+`llm_calls` and counts trips to the provider. `tool_steps` comes from `agent_tool_calls`
+and counts tools the model asked for. A run with one tool call took two model turns, and
+a panel that showed one figure would be asserting an equivalence that does not hold.
+
+**An empty step list is four different facts, and the endpoint says which.** The table may
+be absent; the run may have called no tools; the run may have called six and predate the
+producer; or the recorded steps may be short of the run's own counter because the
+best-effort write failed. Only the second means "no tools were called", and the other three
+render identically unless something distinguishes them — so `tool_steps_note` carries the
+sentence and the browser prints it rather than re-deriving it.
+
+The run's own `tool_calls` integer is the check on the drill-in: it was written by the same
+loop, so a mismatch means the per-step write failed, and `tool_steps_complete` is what
+reports the disagreement instead of quietly showing four rows under a run that claims six.
 
 ---
 
-## 5. Gate status — five of six
+## 4. Gate status — six of six
 
 | # | gate | |
 |---|---|---|
@@ -226,15 +235,16 @@ add` argument in §A.3–§A.7 — verified with `git add --dry-run`, not assume
 | 2 | the panel names the failing tool | ✅ **forced a tool error**: `resolve_area_name`, 1/1, 100% |
 | 3 | every figure traceable to an API response; no arithmetic in the browser | ✅ `observability.ts` has no function that divides |
 | 4 | a window selector changes the numbers | ✅ 24 h hourly / 7 d daily / 30 d daily |
-| 5 | a threshold from `eval/thresholds.yaml` with its live pass/fail state | ❌ needs `GET /evals/latest` — a new router and a fifth `COPILOT_ROUTERS` name |
-| 6 | the write-up records what the panel made visible | ✅ §3, and it was not what §13.6 predicted |
+| 5 | a threshold from `eval/thresholds.yaml` with its live pass/fail state | ✅ `GET /evals/latest`, `routers/evals.py`, migration 0006 |
+| 6 | the write-up records what the panel made visible | ✅ §3, and it was not what the plan predicted |
 
-**Gate 6 did not go the way it was written.** §13.6 assumed the headline would be which of
-the nine tools owns the 10.3%. Two things changed that. The tool count is ten now, not
-nine — m21 added `dataset_aggregate`. And attribution starts at migration `0005`, so the
-answer for the 213 historical runs is *permanently unavailable*: those per-call records
-were never written and cannot be reconstructed. What the panel says instead is the honest
-version — `attributable: true`, covering runs since the migration, currently two of them.
+**Gate 6 did not go the way it was written.** It was expected to headline with which of
+the nine tools owns the 10.3%. Two things changed that. There are ten tools now, not nine.
+And attribution starts at migration `0005`, so the answer for the 213 historical runs is
+*permanently unavailable* — those per-call records were never written and cannot be
+reconstructed. What the panel reports instead is the honest version: `attributable: true`,
+covering runs since the migration. The drill-in (§3.1) is where that data is now read back
+one run at a time; across the store it is 126 calls over 83 runs.
 
 What it made visible on the way there was better: the lifetime page reports a **11.3%**
 tool error rate while the most recent hour ran **40%**, and the most recent hour's
@@ -242,12 +252,12 @@ tool error rate while the most recent hour ran **40%**, and the most recent hour
 three runs against one.
 
 
-## 6. For whoever finishes this
+## 5. For whoever finishes this
 
-- **The producer is the first task, not the endpoint.** Until `executor.py` writes to
-  `agent_tool_calls`, gates 1, 2 and 6's headline are all blocked on the same missing insert.
-  It belongs inside the same transaction that writes the run — losing a tool row must never
-  cost a caller their answer, which is why there is no foreign key.
+- **The producer is what makes any of this answerable.** `executor.py` writes one row per
+  tool call inside the same transaction that writes the run. Losing a tool row must never
+  cost a caller their answer, which is why there is no foreign key and why the insert is
+  wrapped in its own `try`.
 - **`_INSERT_RUN` writes at the END of the loop.** The tool rows are produced before it, so
   the insert order is tool calls first, run last — the opposite of what a foreign key would
   require, and the reason `agent_tool_calls.agent_run_id` has none.

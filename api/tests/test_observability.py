@@ -465,3 +465,134 @@ async def test_an_unknown_run_id_is_none_and_not_an_empty_run():
     async with _live_conn() as conn:
         await _skip_unless_runs(conn)
         assert await queries.run_detail(conn, "no-such-run-id") is None
+
+
+# ── the drill-in: which tool, not how many ──────────────────────────────────
+#
+# The list page reports `6 tool calls (2 failed)` and cannot say which two. That is the
+# whole gap these close. The note is tested pure, because its four states are the part
+# that cannot be checked by looking at a populated database -- three of them require a
+# deployment this one is not.
+
+
+def test_a_missing_table_is_named_with_the_command_that_fixes_it():
+    note = queries._tool_steps_note(present=False, steps=[], claimed=3)
+    assert "alembic upgrade head" in note
+    assert "counts only" in note
+
+
+def test_a_run_from_before_the_producer_is_not_reported_as_toolless():
+    """The migration-boundary case, and the reason this is not a LEFT JOIN. A run with six
+    tool calls and no step rows ran before anything wrote them. Rendering that as "called
+    no tools" states the opposite of what happened."""
+    note = queries._tool_steps_note(present=True, steps=[], claimed=6)
+    assert "6 tool call" in note
+    assert "nothing to backfill" in note
+
+
+def test_a_run_that_genuinely_called_nothing_says_so_plainly():
+    note = queries._tool_steps_note(present=True, steps=[], claimed=0)
+    assert "called no tools" in note
+    assert "backfill" not in note
+
+
+def test_a_short_step_list_says_which_number_to_trust():
+    """The per-step write is best-effort and does not fail a run, so the two counts can
+    disagree. A panel showing four steps under a run reporting six, with nothing saying
+    which is authoritative, is worse than showing neither."""
+    note = queries._tool_steps_note(present=True, steps=[{}] * 4, claimed=6)
+    assert "4 step" in note and "6 tool call" in note
+    assert "run's own counter is the one to trust" in note
+
+
+def test_an_agreeing_step_list_produces_no_note():
+    assert queries._tool_steps_note(present=True, steps=[{}] * 2, claimed=2) is None
+
+
+@pytest.mark.asyncio
+async def test_the_drill_in_returns_the_tool_calls_in_the_order_they_ran():
+    """Step order is the order the evidence trace shows the user. A drill-in that numbered
+    its steps differently from the trace beside it would be worse than no drill-in."""
+    async with _live_conn() as conn:
+        await _skip_unless_runs(conn)
+        run_id = (
+            await conn.execute(
+                text(
+                    "SELECT agent_run_id FROM agent_tool_calls "
+                    "GROUP BY agent_run_id ORDER BY count(*) DESC LIMIT 1"
+                )
+            )
+        ).scalar_one_or_none()
+        if run_id is None:
+            pytest.skip("no tool calls recorded on this deployment")
+        detail = await queries.run_detail(conn, run_id)
+
+    assert detail is not None
+    steps = detail["tool_steps"]
+    assert steps, "the run chosen is the one with the most recorded calls"
+    assert [s["step"] for s in steps] == sorted(s["step"] for s in steps)
+    assert all(s["tool_name"] for s in steps), "every step names its tool"
+    assert detail["tool_step_count"] == len(steps)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_tool_is_named_and_carries_the_message_the_model_read():
+    """The count says a call failed. Only this says `resolve_area_name` declined, and what
+    it told the model -- which is the first question after "which tool"."""
+    async with _live_conn() as conn:
+        await _skip_unless_runs(conn)
+        run_id = (
+            await conn.execute(
+                text("SELECT agent_run_id FROM agent_tool_calls WHERE NOT ok LIMIT 1")
+            )
+        ).scalar_one_or_none()
+        if run_id is None:
+            pytest.skip("no failed tool call recorded on this deployment")
+        detail = await queries.run_detail(conn, run_id)
+
+    failed = [s for s in detail["tool_steps"] if not s["ok"]]
+    assert failed, "the run chosen has a failure recorded against it"
+    assert all(s["error"] for s in failed), "a failure without its message is a count"
+    assert all(s["tool_name"] for s in failed)
+
+
+@pytest.mark.asyncio
+async def test_the_model_turns_and_the_tool_steps_are_counted_separately():
+    """Two lists, two numbers, and they are not the same number. A six-tool run takes as
+    many turns as the loop took; conflating them is what the field names exist to stop."""
+    async with _live_conn() as conn:
+        await _skip_unless_runs(conn)
+        run_id = (
+            await conn.execute(
+                text("SELECT id FROM agent_runs WHERE tool_calls > 0 "
+                     "ORDER BY created_at DESC LIMIT 1")
+            )
+        ).scalar_one_or_none()
+        if run_id is None:
+            pytest.skip("no run with tool calls on this deployment")
+        detail = await queries.run_detail(conn, run_id)
+
+    assert detail["model_turn_count"] == len(detail["model_turns"])
+    assert detail["tool_step_count"] == len(detail["tool_steps"])
+    assert "tool_steps" in detail and "model_turns" in detail
+
+
+def test_the_run_id_route_does_not_swallow_the_timeseries_path():
+    """FastAPI matches in declaration order. `/agent/runs/{run_id}` declared above
+    `/agent/runs/timeseries` would answer the panel's own query with a 404 for a run
+    called "timeseries", and every chart on the page would go blank at once."""
+    from main import app
+
+    paths = [r.path for r in app.routes if getattr(r, "path", "").startswith("/agent/runs")]
+    assert "/agent/runs/{run_id}" in paths
+    assert paths.index("/agent/runs/timeseries") < paths.index("/agent/runs/{run_id}")
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_run_is_a_404_and_not_an_empty_panel(client):
+    """A mistyped id and a run that called no tools are different states. Both would
+    render as a blank panel if this returned 200."""
+    response = await client.get("/agent/runs/definitely-not-a-run-id")
+    assert response.status_code in (404, 503)
+    if response.status_code == 404:
+        assert "definitely-not-a-run-id" in response.json()["detail"]
