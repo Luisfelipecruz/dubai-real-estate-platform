@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CategoryChips } from "@/components/copilot/CategoryChips";
 import { OutcomeBadge } from "@/components/copilot/OutcomeBadge";
 import { AttributionNotice } from "@/components/observability/AttributionNotice";
 import { MetricSeries } from "@/components/observability/MetricSeries";
+import { RunDetailPanel } from "@/components/observability/RunDetailPanel";
 import { TrendBadge } from "@/components/observability/TrendBadge";
 import type {
   Bucket,
@@ -16,11 +17,14 @@ import type {
 } from "@/lib/observability";
 import {
   CopilotError,
+  fetchRunDetail,
   fetchRuns,
   formatCost,
   formatMs,
   formatPercent,
   type AgentOutcome,
+  type RunDetail,
+  type RunRow,
   type RunsResponse,
 } from "@/lib/copilot";
 import { cn } from "@/lib/utils";
@@ -274,25 +278,7 @@ export default function RunsPage() {
               Recent runs ({data?.recent.length ?? 0})
             </h2>
             <div className="space-y-2">
-              {data?.recent.map((run) => (
-                <Card key={run.id} className="p-4" data-testid="run-row">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <p className="flex-1 text-sm text-[--foreground]">{run.question}</p>
-                    <OutcomeBadge outcome={run.outcome} showNote={false} />
-                  </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-3">
-                    <CategoryChips categories={run.categories} />
-                    <span className="font-mono text-[11px] text-[--muted-foreground]">
-                      {run.steps} step{run.steps === 1 ? "" : "s"} ·{" "}
-                      {run.tool_calls} tool call{run.tool_calls === 1 ? "" : "s"}
-                      {run.tool_errors > 0 ? ` (${run.tool_errors} failed)` : ""} ·{" "}
-                      {formatMs(run.latency_ms)} ·{" "}
-                      {formatCost(run.total_cost_usd, run.cost_priced)} ·{" "}
-                      {run.provider}/{run.model}
-                    </span>
-                  </div>
-                </Card>
-              ))}
+              {data?.recent.map((run) => <RunRowCard key={run.id} run={run} />)}
               {data?.recent.length === 0 && (
                 <Card className="p-6 text-center">
                   <p className="text-sm text-[--muted-foreground]">
@@ -327,6 +313,79 @@ function Stat({
         <p className="mt-1.5 text-[11px] leading-relaxed text-[--muted-foreground]">
           {note}
         </p>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * One run in the list, and the calls behind it on demand.
+ *
+ * THE DETAIL IS FETCHED LAZILY AND ONCE. Fifty rows on this page would be fifty requests
+ * on mount for a drill-in nobody has opened, and the counts already on the row are enough
+ * to decide which run is worth opening. Once loaded it is kept, because the run is a
+ * finished record and re-reading it cannot produce a different answer.
+ *
+ * A FAILED FETCH IS SHOWN ON THE ROW, not swallowed. The endpoint returns 503 when
+ * migration 0005 has not been applied, and a drill-in that silently stayed empty would
+ * look identical to a run that called no tools.
+ */
+function RunRowCard({ run }: { run: RunRow }) {
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<RunDetail | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (!next || detail || loading) return;
+    setLoading(true);
+    setFailure(null);
+    fetchRunDetail(run.id)
+      .then(setDetail)
+      .catch((err) => setFailure(err instanceof Error ? err.message : String(err)))
+      .finally(() => setLoading(false));
+  }
+
+  return (
+    <Card className="p-4" data-testid="run-row">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        className="flex w-full flex-wrap items-start justify-between gap-3 text-left"
+      >
+        {open ? (
+          <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-[--muted-foreground]" />
+        ) : (
+          <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[--muted-foreground]" />
+        )}
+        <p className="flex-1 text-sm text-[--foreground]">{run.question}</p>
+        <OutcomeBadge outcome={run.outcome} showNote={false} />
+      </button>
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <CategoryChips categories={run.categories} />
+        <span className="font-mono text-[11px] text-[--muted-foreground]">
+          {run.steps} step{run.steps === 1 ? "" : "s"} ·{" "}
+          {run.tool_calls} tool call{run.tool_calls === 1 ? "" : "s"}
+          {run.tool_errors > 0 ? ` (${run.tool_errors} failed)` : ""} ·{" "}
+          {formatMs(run.latency_ms)} ·{" "}
+          {formatCost(run.total_cost_usd, run.cost_priced)} ·{" "}
+          {run.provider}/{run.model}
+        </span>
+      </div>
+
+      {open && (
+        <div className="mt-3 border-t border-[--border] pt-3">
+          {loading && <Skeleton className="h-16 w-full" />}
+          {failure && (
+            <p className="text-[11px] text-red-700" data-testid="run-detail-error">
+              Could not load this run: {failure}
+            </p>
+          )}
+          {detail && <RunDetailPanel detail={detail} />}
+        </div>
       )}
     </Card>
   );

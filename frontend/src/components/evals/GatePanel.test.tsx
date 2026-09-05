@@ -126,6 +126,75 @@ describe("an unverifiable result", () => {
   });
 });
 
+describe("a run that could not grade every linked question", () => {
+  const partial: EvalReport = {
+    ...FRESH,
+    counts: {
+      agent: { n: 41, passed: 33, route_n: 10, route_ok: 9, fabricated: 0, decoyed: 0 },
+    },
+    coverage: {
+      known: true,
+      complete: false,
+      graded: 10,
+      linked: 11,
+      errors: 1,
+      error_ids: ["A-26"],
+      rate: 0.909091,
+    },
+  };
+
+  it("warns above the score and names the question", () => {
+    render(<GatePanel report={partial} />);
+    const notice = screen.getByTestId("route-coverage");
+    expect(notice).toHaveAttribute("data-level", "partial");
+    expect(notice).toHaveTextContent("A-26");
+  });
+
+  it("puts the linked total beside the graded one", () => {
+    // 9/10 and 9/11 are different claims and the page showed only the flattering one.
+    render(<GatePanel report={partial} />);
+    expect(screen.getByTestId("denominators")).toHaveTextContent("routes 9/10 of 11 linked");
+  });
+
+  it("does not turn a partial run into a gate failure", () => {
+    // The gate verdict belongs to the floors. Coverage qualifies the number; it does not
+    // overrule a comparison that was made correctly on what was measured.
+    render(<GatePanel report={partial} />);
+    expect(screen.getByText("GATE PASSED")).toBeInTheDocument();
+  });
+
+  it("stays silent on a complete run", () => {
+    render(
+      <GatePanel
+        report={{
+          ...FRESH,
+          coverage: {
+            known: true, complete: true, graded: 11, linked: 11,
+            errors: 0, error_ids: [], rate: 1,
+          },
+        }}
+      />,
+    );
+    expect(screen.queryByTestId("route-coverage")).toBeNull();
+    expect(screen.getByTestId("denominators")).not.toHaveTextContent("linked");
+  });
+
+  it("distinguishes a result that cannot say from one that has nothing to report", () => {
+    render(
+      <GatePanel
+        report={{
+          ...FRESH,
+          coverage: {
+            known: false, complete: null, graded: 11, linked: null,
+            errors: null, error_ids: [], rate: null,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId("route-coverage")).toHaveAttribute("data-level", "unknown");
+  });
+});
+
 describe("an ungated run", () => {
   it("draws no verdict where none was computed", () => {
     render(

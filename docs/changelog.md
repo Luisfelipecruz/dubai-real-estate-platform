@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.15.0 - Which tool failed, and how much of the set was measured (2026-09-05)
+
+Two numbers on the observability pages could not be checked. `6 tool calls (2 failed)` did
+not say which two, and a route accuracy of 0.900 did not say that it was measured on ten of
+eleven questions because the eleventh timed out. Both are integers on a row with the detail
+already in the database and nothing reading it back. **46 REST operations - 527 API tests,
+252 frontend tests.**
+
+### Added
+
+- **`GET /agent/runs/{run_id}`** -- one run with the calls behind it: tool name, category,
+  arguments, duration, and on a failure the message the MODEL was shown. Across the store
+  that is 126 recorded calls over 83 runs. Declared BELOW `/agent/runs/timeseries`, because
+  FastAPI matches in declaration order and a path parameter above it would answer the
+  panel's own query with a 404 for a run called "timeseries". A test asserts the order.
+- **A drill-in on `/copilot/runs`.** Rows expand; the detail is fetched once, lazily, and
+  kept. Fifty rows would otherwise be fifty requests on mount for a panel nobody opened.
+- **`route_coverage`, `route_linked`, `route_errors` and `route_error_ids`** in the eval
+  summary, the recorded result and `GET /evals/latest`.
+
+### Fixed
+
+- **An errored question no longer leaves the route denominator.** A record that errored was
+  appended without its `routing_id`, so the question left the linked set entirely -- and a
+  504 on the hardest linked question RAISED route accuracy from 9/11 = 0.818 to 9/10 = 0.900
+  with every floor still green. The `routing_id` now survives the error and `route_ok` is
+  `None`, which is a third state: the route was not wrong, it was never graded.
+
+### Changed
+
+- **`route_accuracy` keeps its definition** -- accuracy among the questions that answered --
+  and travels with a coverage figure that falls below 1.0 the moment one drops out. Coverage
+  is a **target, not a floor**: it measures the host rather than the system, and a build that
+  goes red because a model did not answer inside 120 s is a build somebody switches off. The
+  gate prints a `NOTE` instead, and the panel names the question that vanished.
+- **An empty tool-step list is reported as four distinct states.** The table is absent, or
+  the run called no tools, or the run called six and predates the producer, or the recorded
+  steps are short of the run's own counter. Only the second means "no tools were called";
+  all four render as an empty list unless something says which.
+- **`RunDetail.run.categories` is a `string[]`, not a string.** The same field is a
+  comma-joined `VARCHAR(128)` on `/agent/runs`, which declares no response model, and a list
+  here because this handler splits it. Third endpoint, third shape -- found by reading both
+  live responses rather than the models.
+
+### Not changed
+
+- **The spatial predicate.** All four spatial fixture questions still assert `ST_Touches`
+  while the tool defaults to `ST_Intersects`, so A-23 and A-25 score `partial` for naming
+  real neighbours. Editing ground truth to make a score rise is the one move this repository
+  has already paid to learn. It needs a decision with the argument written into the fixture.
+
 ## v0.14.0 - The eval harness gets an endpoint, and the score gets an expiry date (2026-09-05)
 
 The evaluation harness had no HTTP surface: 36 operations and not one returned a result,

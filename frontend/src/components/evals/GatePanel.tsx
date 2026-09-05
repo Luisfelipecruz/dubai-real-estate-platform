@@ -2,6 +2,7 @@ import { AlertTriangle, CheckCircle2, CircleSlash, XCircle } from "lucide-react"
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import {
+  describeCoverage,
   describeRegistry,
   formatAge,
   formatMargin,
@@ -27,7 +28,10 @@ import {
  *      tools is not a statement about a ten-tool system.
  *   2. Whether the gate was applied at all. An ungated run has no pass/fail, and drawing
  *      one from its absence would be inventing a verdict.
- *   3. Which floors this run did not measure. `not_measured` is a third state — an
+ *   3. Whether the route rate covers the whole linked set. A question that errored is
+ *      absent from both sides of that rate, so an infrastructure timeout RAISES it — the
+ *      one direction of movement a reader will not think to distrust.
+ *   4. Which floors this run did not measure. `not_measured` is a third state — an
  *      agent-only run measures nothing under `retrieval.` — and collapsing it into either
  *      neighbour turns a partial suite into either a false pass or a false alarm.
  */
@@ -50,8 +54,53 @@ const STATE_LABEL: Record<FloorState, string> = {
   not_measured: "not measured",
 };
 
+/** Both warnings above the score render identically apart from severity, so they share a
+ *  shell. `urgent` is amber; anything else is the muted "cannot tell" treatment, because
+ *  drawing "unknown" and "definitely wrong" the same colour flattens the one that matters. */
+function Notice({
+  testId,
+  level,
+  urgent,
+  children,
+}: {
+  testId: string;
+  level: string;
+  urgent: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      data-level={level}
+      className={
+        urgent
+          ? "flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3"
+          : "flex gap-2 rounded-md border border-[--border] bg-[--muted] p-3"
+      }
+    >
+      <AlertTriangle
+        className={
+          urgent
+            ? "mt-0.5 h-4 w-4 shrink-0 text-amber-700"
+            : "mt-0.5 h-4 w-4 shrink-0 text-[--muted-foreground]"
+        }
+      />
+      <p
+        className={
+          urgent
+            ? "text-xs leading-relaxed text-amber-900"
+            : "text-xs leading-relaxed text-[--muted-foreground]"
+        }
+      >
+        {children}
+      </p>
+    </div>
+  );
+}
+
 export function GatePanel({ report }: { report: EvalReport }) {
   const drift = describeRegistry(report.registry);
+  const coverage = describeCoverage(report.coverage);
 
   if (!report.available) {
     return (
@@ -83,32 +132,19 @@ export function GatePanel({ report }: { report: EvalReport }) {
   return (
     <Card className="p-5 space-y-4" data-testid="gate-panel" data-available="true">
       {drift && (
-        <div
-          data-testid="registry-drift"
-          data-level={drift.level}
-          className={
-            drift.level === "stale"
-              ? "flex gap-2 rounded-md border border-amber-200 bg-amber-50 p-3"
-              : "flex gap-2 rounded-md border border-[--border] bg-[--muted] p-3"
-          }
+        <Notice testId="registry-drift" level={drift.level} urgent={drift.level === "stale"}>
+          {drift.text}
+        </Notice>
+      )}
+
+      {coverage && (
+        <Notice
+          testId="route-coverage"
+          level={coverage.level}
+          urgent={coverage.level === "partial"}
         >
-          <AlertTriangle
-            className={
-              drift.level === "stale"
-                ? "mt-0.5 h-4 w-4 shrink-0 text-amber-700"
-                : "mt-0.5 h-4 w-4 shrink-0 text-[--muted-foreground]"
-            }
-          />
-          <p
-            className={
-              drift.level === "stale"
-                ? "text-xs leading-relaxed text-amber-900"
-                : "text-xs leading-relaxed text-[--muted-foreground]"
-            }
-          >
-            {drift.text}
-          </p>
-        </div>
+          {coverage.text}
+        </Notice>
       )}
 
       <div className="flex flex-wrap items-center gap-3">
@@ -149,8 +185,14 @@ export function GatePanel({ report }: { report: EvalReport }) {
           data-testid="denominators"
         >
           answers {String(agent.passed)}/{String(agent.n)} · routes{" "}
-          {String(agent.route_ok)}/{String(agent.route_n)} · fabricated{" "}
-          {String(agent.fabricated)} · decoyed {String(agent.decoyed)}
+          {String(agent.route_ok)}/{String(agent.route_n)}
+          {/* The linked total appears only when it differs from the graded one. On a
+              complete run the two are the same number and printing it twice adds noise;
+              on a partial run its absence is the whole problem. */}
+          {report.coverage?.known && !report.coverage.complete
+            ? ` of ${report.coverage.linked} linked`
+            : ""}{" "}
+          · fabricated {String(agent.fabricated)} · decoyed {String(agent.decoyed)}
           {report.fixtures ? ` · fixtures ${JSON.stringify(report.fixtures)}` : ""}
         </p>
       )}

@@ -23,6 +23,7 @@ gate_passed          the verdict, or null when no gate ran
 floors[]             one entry per threshold: floor, actual, margin, state
 summary              how many are ok / failing / not measured
 counts               the denominators behind each rate
+coverage             how much of the linked routing set the run actually graded
 registry             what changed in the tool layer since the run
 ```
 
@@ -188,22 +189,41 @@ Both new questions did what they were added to do: **R-15** routed to `dataset_a
 on the first call, with no corpus and no area-scoped tool, and returned **AED 11,571.24/m²**
 — A-18's recorded value exactly. **R-16** refused.
 
-### 7.1 An errored question leaves the denominator instead of failing in it
+### 7.1 An errored question used to leave the denominator instead of failing in it
 
-`route_accuracy` is **9/10**, not 9/11. Eleven questions carry a `routing_id`. **A-26 never
-returned** — `HTTP 504: Ollama did not respond within 120s` — and a run that errors is
-appended without a `routing_id`, so it is absent from `route_n` rather than counted as a
-failure.
+`route_accuracy` on this run is **9/10**, not 9/11. Eleven questions carry a `routing_id`.
+**A-26 never returned** — `HTTP 504: Ollama did not respond within 120s` — and an errored
+record was appended without its `routing_id`, so the question left the linked set entirely.
 
-A-26 is the hardest linked question in the set: a spatial predicate joined to an aggregate,
+A-26 is the hardest linked question there is: a spatial predicate joined to an aggregate,
 the case that justifies having an agent loop at all. Graded as a failure the rate would be
-9/11 = 0.818; dropped, it is 0.900. Both clear the floor, so nothing went red, and the
-reported number is still inflated by the removal of the hardest case.
+9/11 = 0.818; dropped, it is 0.900. Both clear the floor, so nothing went red — and the
+reported number was inflated by the removal of the hardest case, in the one direction a
+reader will not think to distrust.
 
-**Not fixed, because the fix is not obvious.** A timeout genuinely is not a routing failure
-— grading infrastructure as quality is its own lie — but silently shrinking the denominator
-is worse. The honest options are a third state (`route_errors` reported beside `route_n`)
-or re-running just the errored ids.
+**This is now a third state.** A timeout is not a routing failure — grading infrastructure
+as quality is its own lie — and shrinking the denominator without saying so is worse than
+either. Both denominators are kept:
+
+| field | means | on this run |
+|---|---|---:|
+| `route_ok` | routed correctly | 9 |
+| `route_n` | graded, i.e. returned something to grade | 10 |
+| `route_linked` | carrying a `routing_id` in the fixture | 11 |
+| `route_errors` / `route_error_ids` | linked, and never answered | 1 · `["A-26"]` |
+
+`route_accuracy` stays `route_ok / route_n`, which is the honest reading of what was
+measured. `route_coverage` is `route_n / route_linked`, and it is the field that falls
+below 1.0 the moment a question drops out. It carries a **target and no floor**: coverage
+measures the host rather than the system, and a build that goes red because a model did not
+answer inside 120 s is a build somebody switches off. Instead the gate prints a `NOTE`
+line, `/evals/latest` returns a `coverage` block, and the panel draws a warning above the
+score naming the question that vanished.
+
+A result recorded before the harness kept both numbers reports `known: false` — it is
+silent about coverage, not evidence of a complete run, and the two must not render alike.
+**The run in this section is one of those results**, which is why the live endpoint shows
+`coverage.known: false` against it rather than reconstructing an 11 it never stored.
 
 ### 7.2 The neighbours tool and its fixture no longer measure the same thing
 

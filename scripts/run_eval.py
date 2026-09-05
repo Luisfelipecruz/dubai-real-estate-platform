@@ -316,6 +316,13 @@ def run_agent(
             elapsed = int((time.time() - mark) * 1000)
 
             if error:
+                # THE LINK SURVIVES THE ERROR, AND THAT IS THE WHOLE POINT OF THESE TWO
+                # FIELDS. An errored record used to carry no `routing_id`, so the question
+                # left the route denominator instead of failing in it — and a timeout on
+                # the hardest linked question RAISED the reported route accuracy. Keeping
+                # the id here means the question is still counted as linked; `route_ok`
+                # stays None because the route is unknown, not wrong. Nothing came back to
+                # grade.
                 results.append(
                     {
                         "id": question["id"],
@@ -323,6 +330,8 @@ def run_agent(
                         "passed": False,
                         "reasons": [error],
                         "elapsed_ms": elapsed,
+                        "routing_id": question.get("routing_id"),
+                        "route_ok": None,
                     }
                 )
                 print(f"  ERR  {question['id']:6} {elapsed/1000:6.1f}s  {error}")
@@ -462,15 +471,30 @@ def report_agent(results: list[dict]) -> dict:
     for result in results:
         by_verdict[result["verdict"]] = by_verdict.get(result["verdict"], 0) + 1
 
+    # THREE STATES, not two. A linked question was routed right, routed wrong, or never
+    # answered at all — and the third is not a quieter version of the second. An errored
+    # run has no route to grade, so folding it in as a failure invents a verdict, and
+    # dropping it from the denominator flatters the score. It gets counted separately and
+    # reported beside the rate it would otherwise distort.
     linked = [r for r in results if r.get("routing_id")]
-    route_ok = sum(1 for r in linked if r.get("route_ok"))
-    disagreements = [r for r in linked if r.get("route_ok") and not r.get("passed")]
+    errored = [r for r in linked if r.get("route_ok") is None]
+    graded = [r for r in linked if r.get("route_ok") is not None]
+    route_ok = sum(1 for r in graded if r["route_ok"])
+    disagreements = [r for r in graded if r["route_ok"] and not r.get("passed")]
 
     print(f"\nanswers  {passed}/{n}")
     for verdict, count in sorted(by_verdict.items(), key=lambda kv: -kv[1]):
         print(f"  {verdict:18} {count}")
     if linked:
-        print(f"\nroutes   {route_ok}/{len(linked)} on the {len(linked)} questions linked to routing.yaml")
+        print(f"\nroutes   {route_ok}/{len(graded)} graded"
+              f"   of {len(linked)} linked to routing.yaml")
+        if errored:
+            print(
+                f"  NOT MEASURED: {len(errored)}  {[r['id'] for r in errored]}"
+                f"   coverage {len(graded)}/{len(linked)}"
+            )
+            print("  The rate above is accuracy among the questions that answered. It is "
+                  "not the fixture's score.")
         print(
             f"  RIGHT ROUTE, WRONG ANSWER: {len(disagreements)}"
             + (f"  {[d['id'] for d in disagreements]}" if disagreements else "")
@@ -512,7 +536,14 @@ def report_agent(results: list[dict]) -> dict:
         "passed": passed,
         "by_verdict": by_verdict,
         "route_ok": route_ok,
-        "route_n": len(linked),
+        # `route_n` is the GRADED denominator and `route_linked` is the fixture's. They
+        # were the same number until a question could error while staying linked, and the
+        # gap between them is the only thing that says a rate was measured on part of the
+        # set.
+        "route_n": len(graded),
+        "route_linked": len(linked),
+        "route_errors": len(errored),
+        "route_error_ids": [r["id"] for r in errored],
         "right_route_wrong_answer": [d["id"] for d in disagreements],
         "fabricated": fabricated,
         "decoyed": decoyed,
@@ -534,6 +565,17 @@ def _agent_metrics(agent_summary: dict) -> dict:
     return {
         "answer_accuracy": agent_summary["passed"] / max(agent_summary["n"], 1),
         "route_accuracy": agent_summary["route_ok"] / max(agent_summary["route_n"], 1),
+        # COVERAGE IS NOT ACCURACY AND IT IS NOT GATED. It answers a different question:
+        # how much of the linked set the run actually measured. It falls below 1.0 only
+        # when a question errored, which is an infrastructure fact rather than a quality
+        # one, so it is reported and targeted rather than floored — a floor here would
+        # turn a host-level timeout into a red build, and `thresholds.yaml` already
+        # records what happens to a gate that goes red for reasons nobody can fix.
+        "route_coverage": (
+            agent_summary["route_n"] / max(agent_summary.get("route_linked") or 0, 1)
+            if agent_summary.get("route_linked")
+            else 1.0
+        ),
         "unanswerable_no_fabrication": 0.0 if agent_summary["fabricated"] else 1.0,
         "no_decoyed_answers": 0.0 if agent_summary["decoyed"] else 1.0,
         "injection_question_stays_out_of_the_corpus": agent_summary["injection_ok"],
@@ -562,6 +604,17 @@ def apply_gate(summary: dict) -> int:
         print(f"  {'OK  ' if ok else 'FAIL'}  {key:34} {actual:.3f} >= {floor}")
         if not ok:
             failures.append(key)
+
+    # A GREEN GATE ON A PARTIAL RUN IS THE FAILURE THIS PRINTS AGAINST. Coverage carries
+    # no floor, so nothing above would mention it — and a run that could not measure its
+    # hardest linked question passes every floor precisely because that question is gone.
+    # The gate is still green and it is still telling the truth; this line is what stops
+    # the number being quoted as if the whole fixture stood behind it.
+    coverage = (summary.get("agent") or {}).get("route_coverage")
+    if coverage is not None and coverage < 1.0:
+        print(f"  NOTE  agent.route_coverage {coverage:.3f} — the route rate above was "
+              "measured on part of the linked set. Not a gate failure; not a full score.")
+
     return 1 if failures else 0
 
 
@@ -736,7 +789,8 @@ def main() -> int:
             recovered_counts = {
                 "agent": {
                     k: summary_of[k]
-                    for k in ("n", "passed", "route_n", "route_ok", "fabricated",
+                    for k in ("n", "passed", "route_n", "route_linked", "route_errors",
+                              "route_error_ids", "route_ok", "fabricated",
                               "decoyed", "unanswerable_n", "by_verdict")
                     if k in summary_of
                 }
@@ -831,7 +885,8 @@ def main() -> int:
         counts["agent"] = {
             k: agent_summary[k]
             for k in (
-                "n", "passed", "route_n", "route_ok", "fabricated", "decoyed",
+                "n", "passed", "route_n", "route_linked", "route_errors",
+                "route_error_ids", "route_ok", "fabricated", "decoyed",
                 "unanswerable_n", "by_verdict",
             )
             if k in agent_summary

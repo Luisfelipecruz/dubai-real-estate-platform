@@ -206,6 +206,99 @@ export interface RunsResponse {
   recent: RunRow[];
 }
 
+/** One tool call, as it was recorded when it ran. */
+export interface ToolStep {
+  id: number;
+  step: number;
+  tool_name: string;
+  /**
+   * `sql | rag | geo | meta`, denormalised at write time. It is what the category WAS on
+   * the day the call ran, not what the registry says now — a tool can be recategorised
+   * between releases and the drill-in must not rewrite history when it is.
+   */
+  category: string;
+  arguments: Record<string, unknown>;
+  ok: boolean;
+  /** The message the MODEL was shown. Present only on a failure. */
+  error: string | null;
+  duration_ms: number;
+  /** The repeat guard fired: same tool, same arguments, earlier in this run. */
+  repeated: boolean;
+  created_at: string;
+}
+
+/** One model turn — a trip to the provider. There are as many of these as the loop took. */
+export interface ModelTurn {
+  id: number;
+  created_at: string;
+  endpoint: string;
+  provider: string;
+  model: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+  cost_priced: boolean;
+  latency_ms: number | null;
+  repair_attempts: number | null;
+}
+
+/**
+ * One run, opened up.
+ *
+ * THE TWO LISTS ARE DIFFERENT THINGS. `model_turns` counts trips to the provider;
+ * `tool_steps` counts tools the model asked for. A six-tool run has neither six turns nor
+ * necessarily six of anything else, and the field names are the guard against reading one
+ * as the other.
+ *
+ * `tool_steps_recorded` is the state that cannot be inferred from an empty list: a run
+ * that called no tools and a run whose per-step record was never kept both arrive as
+ * `tool_steps: []`, and they are opposite facts about the same run.
+ */
+export interface RunDetail {
+  /**
+   * NOT `RunRow`, and `categories` is why.
+   *
+   * It is a LIST here and a comma-joined string on `/agent/runs` — the same field name
+   * carrying a third shape on a third endpoint. `/agent/runs` returns raw rows with no
+   * response model, so the `VARCHAR(128)` reaches the client as `"meta,geo,sql"`; this
+   * handler passes it through `split_categories` first. Extending `RunRow` would inherit
+   * the string type and every `.map()` on this page would throw.
+   *
+   * Verified by reading both live responses, which is the only way this class of defect
+   * has ever been found in this codebase.
+   */
+  run: {
+    id: string;
+    created_at: string;
+    provider: string;
+    model: string;
+    question: string;
+    answer: string | null;
+    outcome: AgentOutcome;
+    steps: number;
+    tool_calls: number;
+    tool_errors: number;
+    categories: string[];
+    total_cost_usd: number | null;
+    cost_priced: boolean;
+    input_tokens: number | null;
+    output_tokens: number | null;
+    latency_ms: number | null;
+    tool_ms: number | null;
+    unverified_numbers: number;
+  };
+  model_turns: ModelTurn[];
+  model_turn_count: number;
+  tool_steps: ToolStep[];
+  tool_step_count: number;
+  /** False when migration 0005 has not been applied on this deployment. */
+  tool_steps_available: boolean;
+  tool_steps_recorded: boolean;
+  /** The step list agrees with the run's own `tool_calls` counter. */
+  tool_steps_complete: boolean;
+  tool_steps_note: string | null;
+}
+
 export interface ToolCatalogue {
   provider: string;
   enabled: boolean;
@@ -313,6 +406,14 @@ export function fetchRuns(
   const params = new URLSearchParams({ limit: String(limit) });
   if (outcome) params.set("outcome", outcome);
   return get<RunsResponse>(`/agent/runs?${params}`, fetchImpl);
+}
+
+/** One run, opened up. A 404 arrives as a `CopilotError` carrying its status. */
+export function fetchRunDetail(
+  runId: string,
+  fetchImpl?: typeof fetch,
+): Promise<RunDetail> {
+  return get<RunDetail>(`/agent/runs/${encodeURIComponent(runId)}`, fetchImpl);
 }
 
 export function fetchTools(fetchImpl?: typeof fetch): Promise<ToolCatalogue> {
