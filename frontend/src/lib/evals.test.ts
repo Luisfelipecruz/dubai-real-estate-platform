@@ -7,6 +7,7 @@
  */
 
 import {
+  describeCoverage,
   describeRegistry,
   formatAge,
   formatMargin,
@@ -14,6 +15,7 @@ import {
   sortFloors,
   type FloorCheck,
   type RegistryDrift,
+  type RouteCoverage,
 } from "@/lib/evals";
 
 describe("formatRate", () => {
@@ -105,6 +107,74 @@ describe("describeRegistry", () => {
 
   it("returns null for a missing registry rather than throwing", () => {
     expect(describeRegistry(undefined)).toBeNull();
+  });
+});
+
+describe("describeCoverage", () => {
+  const complete: RouteCoverage = {
+    known: true,
+    complete: true,
+    graded: 11,
+    linked: 11,
+    errors: 0,
+    error_ids: [],
+    rate: 1,
+  };
+
+  it("says nothing when every linked question was graded", () => {
+    // A caveat printed under every score is a caveat nobody reads by the third visit.
+    expect(describeCoverage(complete)).toBeNull();
+  });
+
+  it("names the questions that never answered", () => {
+    const got = describeCoverage({
+      ...complete,
+      complete: false,
+      graded: 10,
+      errors: 1,
+      error_ids: ["A-26"],
+      rate: 0.909091,
+    });
+    expect(got?.level).toBe("partial");
+    expect(got?.text).toContain("10 of 11");
+    expect(got?.text).toContain("A-26");
+  });
+
+  it("says which way the missing question moved the rate", () => {
+    // The direction is the point. A reader distrusts a number that fell; nobody
+    // distrusts one that rose, and this one rose for an infrastructure reason.
+    const got = describeCoverage({
+      ...complete,
+      complete: false,
+      graded: 10,
+      errors: 1,
+      error_ids: ["A-26"],
+      rate: 0.909091,
+    });
+    expect(got?.text).toContain("raises it");
+  });
+
+  it("agrees with itself about plurals", () => {
+    const got = describeCoverage({
+      ...complete,
+      complete: false,
+      graded: 8,
+      errors: 3,
+      error_ids: ["A-26", "A-31", "A-40"],
+      rate: 0.727273,
+    });
+    expect(got?.text).toContain("they are");
+  });
+
+  it("distinguishes 'cannot tell' from 'nothing was missed'", () => {
+    // Every result recorded before the harness kept both denominators lands here, and
+    // reading that silence as a complete run is the error this level exists for.
+    const got = describeCoverage({ ...complete, known: false, complete: null });
+    expect(got?.level).toBe("unknown");
+  });
+
+  it("returns null for a missing coverage block rather than throwing", () => {
+    expect(describeCoverage(undefined)).toBeNull();
   });
 });
 

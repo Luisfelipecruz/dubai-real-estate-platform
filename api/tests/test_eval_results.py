@@ -149,6 +149,74 @@ def test_an_empty_live_registry_is_not_treated_as_unknown():
     assert got["registry"]["removed_since"] == ["area_summary", "dataset_aggregate"]
 
 
+# ── coverage: the denominator the route rate was measured on ───────────────
+
+
+def counted(**agent):
+    """A row whose context carries agent counts, which is where coverage is read from."""
+    return row(context={"tools": [], "counts": {"agent": {**agent}}})
+
+
+def test_a_run_that_graded_every_linked_question_is_complete_and_says_nothing_more():
+    got = results.assess(counted(route_n=11, route_linked=11, route_errors=0), THRESHOLDS)
+    assert got["coverage"]["known"] is True
+    assert got["coverage"]["complete"] is True
+    assert got["coverage"]["rate"] == 1.0
+
+
+def test_an_errored_question_leaves_the_rate_intact_and_the_coverage_short():
+    """The exact shape that motivated this field. Ten of eleven linked questions returned;
+    the eleventh timed out and has no route to grade. `route_accuracy` is still 9/10,
+    which is the honest reading of what was measured -- and 10/11 is what says the set
+    was not finished."""
+    got = results.assess(
+        counted(route_ok=9, route_n=10, route_linked=11, route_errors=1,
+                route_error_ids=["A-26"]),
+        THRESHOLDS,
+    )
+    assert got["coverage"]["complete"] is False
+    assert got["coverage"]["graded"] == 10
+    assert got["coverage"]["linked"] == 11
+    assert got["coverage"]["errors"] == 1
+    assert got["coverage"]["error_ids"] == ["A-26"]
+
+
+def test_a_result_recorded_before_the_field_existed_reports_unknown_not_complete():
+    """Every row written before the harness kept both denominators carries only
+    `route_n`. That row is SILENT about coverage, and silence read as completeness is the
+    same error `registry.known` exists to prevent."""
+    got = results.assess(counted(route_ok=9, route_n=10), THRESHOLDS)
+    assert got["coverage"]["known"] is False
+    assert got["coverage"]["complete"] is None
+    assert got["coverage"]["linked"] is None
+
+
+def test_a_run_with_no_linked_questions_cannot_report_a_coverage_rate():
+    """Zero linked questions is not 100% coverage. Dividing by it would produce either a
+    crash or a confident 1.0 about a measurement that never happened."""
+    got = results.assess(counted(route_n=0, route_linked=0), THRESHOLDS)
+    assert got["coverage"]["known"] is False
+    assert got["coverage"]["rate"] is None
+
+
+def test_the_error_count_is_derived_when_the_run_did_not_store_it():
+    """`route_errors` arrived with the field; a row carrying both denominators and not the
+    count still evidences the gap between them."""
+    got = results.assess(counted(route_n=8, route_linked=11), THRESHOLDS)
+    assert got["coverage"]["errors"] == 3
+
+
+def test_coverage_is_a_rate_the_gate_can_read():
+    """It is emitted into `metrics` by the harness like any other rate, so a floor could
+    be placed on it later without changing this shape. It carries no floor today, which
+    is a decision recorded in thresholds.yaml under `targets`, not an oversight."""
+    got = results.assess(
+        row(metrics={"agent": {"route_accuracy": 0.9, "route_coverage": 0.909}}),
+        THRESHOLDS,
+    )
+    assert got["metrics"]["agent.route_coverage"] == 0.909
+
+
 # ── flattening: what may and may not be compared against a floor ───────────
 
 

@@ -242,6 +242,132 @@ def test_the_two_route_graders_agree_on_every_routing_question():
             assert mine is theirs, (question["id"], called, got)
 
 
+# ── an errored question is a third state, not a missing one ────────────────
+
+
+def _run_eval():
+    """The module under test, found the same two ways and for the same reasons as above."""
+    import sys
+
+    scripts = next(
+        (p for p in (Path(__file__).resolve().parents[i] / "scripts" for i in (1, 2))
+         if (p / "run_eval.py").is_file()),
+        None,
+    )
+    if scripts is None:  # pragma: no cover - neither layout present
+        pytest.fail("scripts/run_eval.py not found in either layout.")
+    sys.path.insert(0, str(scripts))
+    import run_eval  # noqa: PLC0415
+
+    return run_eval
+
+
+def _graded(qid: str, routing_id: str | None, route_ok: bool, passed: bool = True) -> dict:
+    return {"id": qid, "routing_id": routing_id, "route_ok": route_ok,
+            "passed": passed, "verdict": "exact" if passed else "wrong"}
+
+
+def _errored(qid: str, routing_id: str | None) -> dict:
+    """What `run_agent` appends when the request never came back. `route_ok` is None
+    because nothing was returned to grade, and the routing_id survives so the question
+    stays linked."""
+    return {"id": qid, "routing_id": routing_id, "route_ok": None, "passed": False,
+            "verdict": "error", "reasons": ["HTTP 504"]}
+
+
+def test_an_errored_question_does_not_leave_the_route_denominator(capsys):
+    """THE BUG THIS CLOSES, in its original shape. Eleven questions linked, one of them a
+    504 from a model that did not answer inside the timeout. The errored record used to
+    carry no routing_id at all, so it left the linked set entirely and the rate was
+    computed on ten -- an infrastructure timeout on the HARDEST question RAISING the
+    reported accuracy from 9/11 to 9/10, with every floor still green.
+
+    Both denominators are kept now: the rate stays accuracy-among-measured, and coverage
+    is what says the set was not finished.
+    """
+    results = [_graded(f"A-{i:02}", f"R-{i:02}", True) for i in range(1, 10)]
+    results.append(_graded("A-10", "R-10", False))
+    results.append(_errored("A-26", "R-05"))
+
+    summary = _run_eval().report_agent(results)
+    assert summary["route_ok"] == 9
+    assert summary["route_n"] == 10, "the graded denominator excludes what never answered"
+    assert summary["route_linked"] == 11, "the fixture's denominator keeps it"
+    assert summary["route_errors"] == 1
+    assert summary["route_error_ids"] == ["A-26"]
+
+
+def test_the_errored_question_is_named_in_the_printed_report(capsys):
+    """A number that moved for an infrastructure reason has to say which question did it,
+    or the next reader re-runs the whole suite to find out."""
+    _run_eval().report_agent(
+        [_graded("A-01", "R-01", True), _errored("A-26", "R-05")]
+    )
+    out = capsys.readouterr().out
+    assert "NOT MEASURED" in out
+    assert "A-26" in out
+    assert "coverage 1/2" in out
+
+
+def test_a_complete_run_reports_full_coverage_and_no_extra_noise(capsys):
+    run_eval = _run_eval()
+    summary = run_eval.report_agent(
+        [_graded("A-01", "R-01", True), _graded("A-02", "R-02", False)]
+    )
+    assert summary["route_n"] == summary["route_linked"] == 2
+    assert summary["route_errors"] == 0
+    assert run_eval._agent_metrics(summary)["route_coverage"] == 1.0
+    assert "NOT MEASURED" not in capsys.readouterr().out
+
+
+def test_coverage_is_one_when_nothing_is_linked_at_all(capsys):
+    """A truths-only or unlinked run has no route coverage to report, and 0/0 must not
+    render as a failure of coverage."""
+    run_eval = _run_eval()
+    summary = run_eval.report_agent([_graded("A-01", None, False)])
+    assert summary["route_linked"] == 0
+    assert run_eval._agent_metrics(summary)["route_coverage"] == 1.0
+
+
+def test_an_errored_question_still_counts_against_the_ANSWER_rate(capsys):
+    """The asymmetry is deliberate and worth pinning. A question that did not answer has
+    no route to grade -- but it also has no answer, and "no answer" is a real answer-side
+    failure. Coverage exists because the route rate could not express that; the answer
+    rate always could."""
+    summary = _run_eval().report_agent([_graded("A-01", "R-01", True), _errored("A-26", "R-05")])
+    assert summary["n"] == 2
+    assert summary["passed"] == 1
+
+
+def test_the_gate_notes_a_partial_run_without_failing_it(capsys):
+    """Coverage carries no floor, so nothing in the floors loop mentions it -- and a run
+    that could not measure its hardest question passes every floor precisely BECAUSE that
+    question is gone. The note is what stops the number being quoted as a full score."""
+    run_eval = _run_eval()
+    code = run_eval.apply_gate({"agent": {"route_coverage": 0.909, "route_accuracy": 0.9,
+                                          "answer_accuracy": 0.8}})
+    out = capsys.readouterr().out
+    assert code == 0, "a partial run is not a gate failure"
+    assert "route_coverage" in out and "measured on part of the linked set" in out
+
+
+def test_the_gate_stays_silent_about_coverage_on_a_complete_run(capsys):
+    run_eval = _run_eval()
+    run_eval.apply_gate({"agent": {"route_coverage": 1.0, "route_accuracy": 0.9,
+                                   "answer_accuracy": 0.8}})
+    assert "measured on part of the linked set" not in capsys.readouterr().out
+
+
+def test_route_coverage_is_a_declared_target_rather_than_a_silent_metric():
+    """A rate the harness emits and no file mentions is a rate nobody reads. It is in
+    `targets`, deliberately not in `floors` -- the reasoning is written beside it."""
+    thresholds = yaml.safe_load(
+        (Path(_golden("answers.yaml")).parents[1] / "thresholds.yaml").read_text()
+    )
+    assert "agent.route_coverage" in (thresholds.get("targets") or {})
+    assert "agent.route_coverage" not in (thresholds.get("floors") or {})
+
+
 # ── isolation: the answer questions must not be in the corpus either ───────
 
 

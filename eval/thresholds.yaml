@@ -124,6 +124,19 @@ floors:
 # These have targets rather than floors. A target is an intention; a floor fails a build.
 
 targets:
+  agent.route_coverage: 1.0
+  # The share of the linked questions that actually returned something to grade. It is a
+  # target and not a floor because it measures the host, not the system: a question that
+  # times out has no route to be right or wrong about, and failing a build on that trains
+  # people to re-run until the machine cooperates.
+  #
+  # It exists because the alternative was worse. An errored question used to leave the
+  # route denominator entirely, so a timeout on the HARDEST linked question raised the
+  # reported rate — 9/10 = 0.900 printed green where 9/11 would have been 0.818, and every
+  # floor passed. The rate is still accuracy-among-measured, which is the right definition;
+  # coverage is what says how much was measured, and the gate prints a NOTE whenever it
+  # drops below this number.
+
   agent.answer_accuracy: 0.90
   # Reaching it needs a dataset-wide aggregate tool (6 questions) and a fix for the empty
   # response body (3 questions). Both are agent-layer work, not eval work, and both are

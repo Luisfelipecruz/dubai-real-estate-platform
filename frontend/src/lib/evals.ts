@@ -46,6 +46,23 @@ export interface RegistryDrift {
   removed_since: string[];
 }
 
+/**
+ * How much of the linked routing set the run actually graded.
+ *
+ * The same shape of claim as `RegistryDrift` and for the same reason. `known: false` is a
+ * result stored before the harness kept both denominators; it is silent about coverage
+ * rather than evidence of a complete run, so `complete` is `null` and never `false`.
+ */
+export interface RouteCoverage {
+  known: boolean;
+  complete: boolean | null;
+  graded: number | null;
+  linked: number | null;
+  errors: number | null;
+  error_ids: string[];
+  rate: number | null;
+}
+
 export interface EvalReport {
   available: boolean;
   reason?: string;
@@ -65,6 +82,7 @@ export interface EvalReport {
   metrics?: Record<string, number>;
   fixtures?: Record<string, number> | null;
   counts?: Record<string, Record<string, unknown>> | null;
+  coverage?: RouteCoverage;
   registry?: RegistryDrift;
   caveat?: string | null;
 }
@@ -152,6 +170,37 @@ export function describeRegistry(
     text:
       `Measured against a different tool layer: ${parts.join(", ")}. ` +
       "Re-run `make eval` before quoting this score.",
+  };
+}
+
+/**
+ * The sentence that qualifies the route rate, or null when the run graded everything.
+ *
+ * Silent on a complete run, because a caveat printed under every score is a caveat nobody
+ * reads. It speaks in exactly two situations: a question errored and left the denominator,
+ * or the result predates the field and cannot say either way.
+ */
+export function describeCoverage(
+  coverage: RouteCoverage | undefined,
+): { level: "partial" | "unknown"; text: string } | null {
+  if (!coverage) return null;
+  if (!coverage.known) {
+    return {
+      level: "unknown",
+      text:
+        "This result does not record how many linked questions it graded, so whether the " +
+        "route rate covers the whole fixture cannot be established.",
+    };
+  }
+  if (coverage.complete) return null;
+  const named = coverage.error_ids.length ? ` (${coverage.error_ids.join(", ")})` : "";
+  return {
+    level: "partial",
+    text:
+      `The route rate covers ${coverage.graded} of ${coverage.linked} linked questions. ` +
+      `${coverage.errors} did not return an answer to grade${named}, so ${
+        coverage.errors === 1 ? "it is" : "they are"
+      } absent from both sides of the rate — which raises it rather than lowering it.`,
   };
 }
 

@@ -220,6 +220,42 @@ def _staleness(recorded_tools: list[str] | None, live_tools: list[str] | None) -
     }
 
 
+def _coverage(counts: dict[str, Any] | None) -> dict:
+    """How much of the linked routing set the run actually graded.
+
+    `route_accuracy` is accuracy among the questions that answered, which is the right
+    definition and an incomplete claim on its own: a question that errors has no route to
+    be right or wrong about, so it leaves the numerator AND the denominator, and the rate
+    goes UP. The gap between `route_n` and `route_linked` is the only field that says so.
+
+    `known` is False for any result recorded before the harness kept both numbers. Those
+    rows are not evidence of a complete run -- they are silent about it, and the two read
+    identically unless something distinguishes them.
+    """
+    agent = (counts or {}).get("agent") or {}
+    graded, linked = agent.get("route_n"), agent.get("route_linked")
+    if not isinstance(graded, int) or not isinstance(linked, int) or linked <= 0:
+        return {
+            "known": False,
+            "complete": None,
+            "graded": graded if isinstance(graded, int) else None,
+            "linked": None,
+            "errors": None,
+            "error_ids": [],
+            "rate": None,
+        }
+    errors = agent.get("route_errors")
+    return {
+        "known": True,
+        "complete": graded == linked,
+        "graded": graded,
+        "linked": linked,
+        "errors": errors if isinstance(errors, int) else linked - graded,
+        "error_ids": agent.get("route_error_ids") or [],
+        "rate": round(graded / linked, 6),
+    }
+
+
 def assess(
     row: dict[str, Any] | None,
     thresholds: dict[str, Any],
@@ -302,6 +338,7 @@ def assess(
         "metrics": measured,
         "fixtures": context.get("fixtures"),
         "counts": context.get("counts"),
+        "coverage": _coverage(context.get("counts")),
         "registry": _staleness(context.get("tools"), live_tools),
         "caveat": context.get("caveat"),
     }
