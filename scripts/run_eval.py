@@ -7,18 +7,14 @@
 
 WHY THIS DID NOT ABSORB `run_routing_eval.py`
 ----------------------------------------------
-m15 shipped `scripts/run_routing_eval.py` and left the merge as an explicit decision for
-m16 rather than a guess. The decision, made deliberately:
-
   - `--suite agent` DOES grade route and answer together, and has to. "The route was
     right and the answer was 4.6x wrong" is a claim about ONE response, and a local 20B
     does not return the same response twice. Two scripts issuing two requests cannot make
     that statement; they can only report two rates that happen to disagree.
 
-  - `run_routing_eval.py` stays, unchanged. It is m15's committed artefact, its fixture
-    header records `graded_before_run: true`, and it needs no database — it runs anywhere
-    the API runs. Deleting it to avoid two entry points would rewrite the record of what
-    m15 measured, which is a worse outcome than one redundant script.
+  - `run_routing_eval.py` stays because it needs no database and runs anywhere the API
+    runs, which `--suite agent` does not. Deleting it to avoid two entry points would cost
+    that property to save one redundant script.
 
 The grading logic is NOT duplicated. It moved to `services/evaluation/`, where it has
 tests; `run_routing_eval.py` keeps its own inlined copy of the route rules exactly as it
@@ -42,6 +38,7 @@ import asyncio
 import json
 import sys
 import time
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -52,6 +49,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from services.evaluation import grading, retrieval as retrieval_metrics, truth  # noqa: E402
+from services.evaluation import results as eval_results  # noqa: E402
 from services.evaluation.numeric import matches as numeric_matches  # noqa: E402
 from services.evaluation.numeric import parse_tolerance  # noqa: E402
 
@@ -263,11 +261,11 @@ def report_retrieval(summary: dict) -> None:
 
 
 def grade_route(routing_question: dict | None, response: dict) -> tuple[bool, list[str]]:
-    """The m15 route rules, applied to a response this script already has.
+    """The route rules, applied to a response this script already has.
 
     Deliberately the same rules as `run_routing_eval.py` rather than an improvement on
     them. A test asserts the two agree; the moment this file starts grading routes
-    differently, the m15 numbers stop being comparable with the m16 ones.
+    differently, results from the two stop being comparable.
     """
     if routing_question is None:
         return True, []
@@ -494,7 +492,7 @@ def report_agent(results: list[dict]) -> dict:
     decoyed = by_verdict.get("decoyed", 0)
     unanswerable = sum(1 for r in results if r["verdict"] in
                        ("abstained", "fabricated", "over_answered", "empty"))
-    # THE ONE ROUTE THAT IS A PROPERTY RATHER THAN A RATE. R-01 is the m14 injection
+    # THE ONE ROUTE THAT IS A PROPERTY RATHER THAN A RATE. R-01 is the injection
     # question: a false sentence about Business Bay transaction volume, written into a
     # public note, produced a high-confidence answer with every grounding check green.
     # Verification cannot catch that; keeping the question away from prose can. This
@@ -567,6 +565,92 @@ def apply_gate(summary: dict) -> int:
     return 1 if failures else 0
 
 
+def registered_tools(base: str, timeout: float) -> list[str] | None:
+    """The tool names the agent is serving RIGHT NOW, fingerprinted into the result.
+
+    None on any failure, and None is not an empty list. An empty list means "every
+    recorded tool has been removed", which is a precise and false claim to make about an
+    API that simply did not answer. A run against a deployment with the agent layer
+    switched off must record that it cannot tell.
+    """
+    try:
+        with httpx.Client(timeout=min(timeout, 30.0)) as client:
+            response = client.get(f"{base}/agent/tools")
+            if response.status_code != 200:
+                return None
+            return sorted(t["name"] for t in response.json().get("tools", []))
+    except Exception:
+        return None
+
+
+def record_result(
+    summary: dict,
+    *,
+    suite: str,
+    provider: str | None,
+    base: str,
+    duration_s: int,
+    gate_applied: bool,
+    gate_code: int | None,
+    tools: list[str] | None,
+    fixtures: dict,
+    counts: dict,
+    recorded_at: "datetime | None" = None,
+    extra_context: dict | None = None,
+) -> None:
+    """Write this run to `eval_results`, so the score outlives the terminal.
+
+    The per-question responses are stripped before the write: they carry one model answer
+    per question, thousands of characters each, and would make the table grow faster than
+    the runs it describes while answering nothing the endpoint asks. They stay in the
+    `--out` file, which is what re-grading reads.
+    """
+    # A DEDICATED ENGINE WITH NO POOL, AND THE REASON IS NOT STYLE.
+    #
+    # `resolve_truths` has already used the shared session inside its own `asyncio.run`.
+    # Each `asyncio.run` builds a new event loop and closes it, while the engine's pool
+    # keeps the asyncpg connections bound to the first one -- so reusing it here raises
+    # `got Future attached to a different loop`, and it raises AFTER the whole suite has
+    # run and every model call has been paid for.
+    #
+    # NullPool means the connection is opened and closed inside this loop and belongs to
+    # nothing else. Anything that writes to the database from a second `asyncio.run` in
+    # this script needs the same treatment.
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from config import DATABASE_URL
+
+    metrics = {k: v for k, v in summary.items() if not k.startswith("_")}
+
+    async def write() -> int:
+        engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
+        try:
+            async with engine.begin() as conn:
+                return await eval_results.record(
+                    conn,
+                    recorded_at=recorded_at or datetime.now(UTC),
+                    suite=suite,
+                    provider=provider,
+                    duration_s=duration_s,
+                    gate_applied=gate_applied,
+                    gate_passed=None if gate_code is None else gate_code == 0,
+                    metrics=metrics,
+                    context={
+                        "base": base,
+                        "tools": tools,
+                        "fixtures": fixtures,
+                        "counts": counts,
+                        "caveat": CAVEAT,
+                        **(extra_context or {}),
+                    },
+                )
+        finally:
+            await engine.dispose()
+
+    print(f"\nrecorded as eval_results id={asyncio.run(write())} -- GET /evals/latest")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--suite", default="truths",
@@ -586,14 +670,111 @@ def main() -> int:
     )
     parser.add_argument("--out", default=None,
                         help="Write JSON results. NOT under eval/ — mounted read-only.")
+    parser.add_argument(
+        "--record-from", default=None, metavar="PATH",
+        help="Record a summary written earlier by --out, without re-running anything. "
+             "The recovery path for a suite that completed and failed to store its "
+             "result: the measurement is already in the file, and re-issuing every model "
+             "call to get a row into a table would be paying twice for one measurement.",
+    )
+    parser.add_argument(
+        "--record", action="store_true",
+        help="Store this run in eval_results, where GET /evals/latest reads it. Opt-in "
+             "rather than default: a result that becomes the deployment's published "
+             "score should be a run someone meant to publish.",
+    )
     args = parser.parse_args()
+
+    # A PARTIAL RUN MUST NOT BECOME THE PUBLISHED SCORE. `--only` measures the questions
+    # it names and reports a rate over that denominator -- 1.000 for a single question,
+    # which is a true statement about nothing and reads on a page as a perfect score.
+    # Refusing is the whole of the protection: once the row is written the denominator is
+    # a number in a database, and no rendering can undo it.
+    if args.record and args.only:
+        raise SystemExit(
+            "REFUSING to --record a --only run: it would publish a rate whose "
+            "denominator is a subset nobody chose to measure."
+        )
+
+    if args.record_from:
+        stored = json.loads(Path(args.record_from).read_text())
+        meta = stored.get("_meta") or {}
+        # A file with no `_meta` block carries no provenance of its own, so the command
+        # line supplies it -- and the row SAYS SO, in `metadata_source`. Silently
+        # attributing command-line values to the run would make a recovered result
+        # indistinguishable from one the harness described itself.
+        # A recovered file dates itself from the RUN, not from the recovery. Using the
+        # current time would place the measurement hours after the system state it
+        # describes, which is the error `recorded_at` exists to avoid.
+        stamped = meta.get("recorded_at")
+
+        # THE GATE IS RE-APPLIED HERE, NOT COPIED FROM THE FILE.
+        #
+        # Trusting a stored gate code means a file that carries none records
+        # `gate_applied: true` beside `gate_passed: null` -- a gate asserted with no
+        # verdict behind it. Re-comparing the stored metrics against the CURRENT floors is
+        # also the more useful operation, since a floor may have been argued upward since
+        # the run happened.
+        gate_code = apply_gate(stored) if args.gate else None
+
+        # DENOMINATORS RE-DERIVED FROM THE STORED RESPONSES, not guessed and not skipped.
+        #
+        # A file with no `_meta` block carries no counts, and a rate without its
+        # denominator cannot be compared with anything: 0.805 is 33/41 or 161/200, and the
+        # fixture size changes over time. `report_agent` is the same function the live path
+        # uses and reads only the stored responses, so re-deriving costs no model call and
+        # cannot disagree with the original run.
+        #
+        # `fixtures` gets only what the file evidences -- the answer count. The routing and
+        # retrieval sizes are NOT read off the fixtures on disk: those are the current
+        # files, and attributing them to a run that may have used different ones is the
+        # quiet substitution `metadata_source` exists to disclose.
+        recovered_counts, recovered_fixtures = meta.get("counts") or {}, meta.get("fixtures") or {}
+        if not recovered_counts and stored.get("_agent_results"):
+            print("\n════ re-deriving counts from the stored responses ════")
+            summary_of = report_agent(stored["_agent_results"])
+            recovered_counts = {
+                "agent": {
+                    k: summary_of[k]
+                    for k in ("n", "passed", "route_n", "route_ok", "fabricated",
+                              "decoyed", "unanswerable_n", "by_verdict")
+                    if k in summary_of
+                }
+            }
+            recovered_fixtures = {**recovered_fixtures,
+                                  "answers": len(stored["_agent_results"])}
+
+        record_result(
+            stored,
+            recorded_at=datetime.fromisoformat(stamped) if stamped else None,
+            suite=meta.get("suite") or args.suite,
+            provider=meta.get("provider") or args.provider,
+            base=meta.get("base") or args.base,
+            duration_s=int(meta.get("duration_s") or 0),
+            gate_applied=bool(args.gate),
+            gate_code=gate_code,
+            tools=meta.get("tools") or registered_tools(args.base, args.timeout),
+            fixtures=recovered_fixtures,
+            counts=recovered_counts,
+            extra_context={
+                "recovered_from": args.record_from,
+                "metadata_source": "the file" if meta else "the command line",
+                "gate_reapplied_at_record_time": bool(args.gate),
+                "counts_source": "the file" if (meta.get("counts")) else
+                                 "re-derived from _agent_results",
+            },
+        )
+        return 0
 
     only = {q.strip() for q in args.only.split(",")} if args.only else None
     summary: dict = {}
+    fixtures: dict = {}
+    counts: dict = {}
     started = time.time()
 
     if args.suite in ("truths", "agent", "all") or args.regrade:
         answers = load(ANSWERS)
+        fixtures["answers"] = len(answers["questions"])
         resolved = asyncio.run(resolve_truths(answers))
 
     if args.regrade:
@@ -619,6 +800,7 @@ def main() -> int:
     if args.suite in ("retrieval", "all"):
         print("\n════ retrieval ════")
         fixture = load(RETRIEVAL)
+        fixtures["retrieval"] = len(fixture["questions"])
         modes = tuple(m.strip() for m in args.modes.split(","))
         by_mode = run_retrieval(args.base, fixture, modes, args.k, args.timeout)
         report_retrieval(by_mode)
@@ -636,19 +818,60 @@ def main() -> int:
     if args.suite in ("agent", "all"):
         print("\n════ agent — route AND answer, one response each ════")
         routing = {q["id"]: q for q in load(ROUTING)["questions"]}
+        fixtures["routing"] = len(routing)
         results = run_agent(
             args.base, answers, resolved, routing, only, args.timeout, args.provider
         )
         agent_summary = report_agent(results)
         summary["agent"] = _agent_metrics(agent_summary)
         summary["_agent_results"] = results
+        # The DENOMINATORS, stored beside the rates they produced. A rate on its own
+        # cannot be read six weeks later: 0.750 is 30/40 or 3/4, and the fixture grew by
+        # a question between those two runs. `assess` renders these under the score.
+        counts["agent"] = {
+            k: agent_summary[k]
+            for k in (
+                "n", "passed", "route_n", "route_ok", "fabricated", "decoyed",
+                "unanswerable_n", "by_verdict",
+            )
+            if k in agent_summary
+        }
 
-    print(f"\n{time.time() - started:.0f}s\n\n{CAVEAT}")
+    elapsed = int(time.time() - started)
+    print(f"\n{elapsed}s\n\n{CAVEAT}")
 
     code = apply_gate(summary) if args.gate else 0
+    # `_meta` travels with the numbers so the file can be recorded later without anyone
+    # having to remember which suite produced it. Re-grading reads the stored responses by
+    # name and is unaffected; every `_`-prefixed key is stripped before metrics are
+    # written.
+    summary["_meta"] = {
+        "suite": args.suite,
+        "provider": args.provider,
+        "base": args.base,
+        "duration_s": elapsed,
+        "gate_applied": args.gate,
+        "gate_code": code if args.gate else None,
+        "fixtures": fixtures,
+        "counts": counts,
+        "recorded_at": datetime.now(UTC).isoformat(),
+    }
     if args.out:
         Path(args.out).write_text(json.dumps(summary, indent=2, default=str))
         print(f"\nwrote {args.out}")
+    if args.record:
+        record_result(
+            summary,
+            suite=args.suite,
+            provider=args.provider,
+            base=args.base,
+            duration_s=elapsed,
+            gate_applied=args.gate,
+            gate_code=code if args.gate else None,
+            tools=registered_tools(args.base, args.timeout),
+            fixtures=fixtures,
+            counts=counts,
+        )
     return code
 
 

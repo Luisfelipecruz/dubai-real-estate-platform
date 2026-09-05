@@ -1,10 +1,8 @@
 """The copilot router registration contract.
 
-`CLAUDE.md` rule 3.2 requires a file touched by several PRs to be added whole in the
-first one. `api/main.py` is touched by m13 (search), m14 (ask), m15 (agent) and m17
-(voice), so its final form has to work while the modules it names do not all exist. Two
-of the four are still unbuilt as of m14, and these tests must not have to be edited when
-the third and fourth arrive.
+`api/main.py` names every copilot router, and its final form has to work while the modules
+it names do not all exist. These tests must therefore not need editing each time one
+arrives.
 
 The tolerant loop that resolves it is not a workaround dressed as design -- it is how
 the feature has to behave anyway. `LLM_PROVIDER=none` on a machine with 8 GB of RAM
@@ -28,23 +26,19 @@ async def test_health_is_unaffected_by_missing_copilot_modules(client):
 
 
 def test_every_copilot_router_that_exists_is_registered_and_no_other():
-    """The contract, derived from the filesystem rather than from a milestone number.
+    """The contract, derived from the filesystem rather than from a hardcoded inventory.
 
-    This test used to hardcode the inventory -- `/search` present, `/ask`, `/agent/query`
-    and `/voice/stream` absent -- and m14 broke it the moment routers/ask.py appeared.
-    That is a real problem under this repository's deferred-commit workflow and not just
-    an annoyance: commits are held back across several milestones, so the file's content
-    at `git add` time is what the EARLIER commit ships. A test that names today's routers
-    is therefore wrong in one direction or the other no matter which version gets staged.
+    A test that names today's routers -- `/search` present, `/ask` absent -- goes wrong the
+    moment one of them is added or removed, and it goes wrong silently in whichever
+    direction nobody checked.
 
-    Deriving the expectation from what is importable fixes that permanently. In a clean
-    checkout of m13 there is no routers/ask.py, so this asserts /ask is absent; in the
-    m14 working tree there is one, so it asserts /ask is present. Same file, both true,
-    and m15 and m17 will not have to touch it either.
+    Deriving the expectation from what is importable fixes that permanently: in a checkout
+    with no `routers/ask.py` this asserts `/ask` is absent, and in one that has it, that it
+    is present. Same test, both true, and no edit needed when the next router lands.
 
-    Read from the OpenAPI schema rather than app.routes: the schema is the contract the
-    frontend and the m15 tool layer consume, and its shape does not change with the
-    FastAPI version the way the internal route objects do.
+    Read from the OpenAPI schema rather than `app.routes`: the schema is the contract the
+    frontend and the tool layer consume, and its shape does not change with the FastAPI
+    version the way the internal route objects do.
     """
     paths = set(app.openapi()["paths"])
     assert "/stats" in paths, "core operations must survive the copilot loop"
@@ -58,12 +52,12 @@ def test_every_copilot_router_that_exists_is_registered_and_no_other():
             # Not built yet. Nothing it would have registered may be present, and the
             # only way to know what that is, is to know it is nothing.
             continue
-        # HTTP routes and WEBSOCKET routes are checked against different things, and
-        # m17 is what forced the split. `app.openapi()["paths"]` contains HTTP operations
-        # only — FastAPI excludes WebSockets from the schema, correctly, because a socket
-        # is not an operation with a method and a response model. So the first WebSocket
-        # in this project (`/voice/stream`) failed a test that had been right for four
-        # milestones, by asserting a premise that had simply never been tested.
+        # HTTP routes and WEBSOCKET routes are checked against different things.
+        # `app.openapi()["paths"]` contains HTTP operations only — FastAPI excludes
+        # WebSockets from the schema, correctly, because a socket is not an operation with
+        # a method and a response model. A test that checks every declared route against
+        # the schema therefore fails on the first WebSocket, having asserted a premise
+        # that was simply never true.
         #
         # The contract still holds in both halves: an HTTP route the router declares must
         # appear in the schema, and a WebSocket route it declares must be mounted on the
@@ -122,6 +116,16 @@ def test_router_that_exists_but_fails_to_import_is_not_swallowed():
 
 
 def test_registration_list_is_the_full_planned_set():
-    """Guards the rule-3.2 decision itself: if a later PR adds its router by editing
-    main.py instead of adding a module, this test is the thing that notices."""
-    assert COPILOT_ROUTERS == ("search", "ask", "agent", "voice")
+    """Every copilot router is its own module, and this is what enforces that.
+
+    The rule is that a new endpoint arrives as a new file under `routers/`, registered by
+    adding its name here. The failure it guards against is the opposite move: bolting an
+    endpoint onto an existing router because that file happens to be open, which grows one
+    module without bound and leaves the registration list describing a shape the code no
+    longer has.
+
+    Widening this tuple is therefore meant to be deliberate. If a change makes this test
+    red, the question to answer is whether the new surface really is a separate module --
+    not how to make the assertion match.
+    """
+    assert COPILOT_ROUTERS == ("search", "ask", "agent", "voice", "evals")

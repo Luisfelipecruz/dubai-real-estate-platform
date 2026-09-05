@@ -52,8 +52,11 @@ llm-up:                            ## Start the CONTAINERISED LLM. On macOS you 
 	docker compose --profile llm up -d ollama
 	docker compose --profile llm exec ollama ollama pull $${OLLAMA_MODEL:-gpt-oss:20b}
 
+# --record stores the result in eval_results, which is where GET /evals/latest reads it.
+# Without it the score exists only in this terminal. The single-suite targets below
+# deliberately do NOT record: a partial suite must not become the published score.
 eval:                              ## Truths + retrieval + agent, with the regression gate
-	docker compose exec api python /app/scripts/run_eval.py --suite all --gate
+	docker compose exec api python /app/scripts/run_eval.py --suite all --gate --record
 
 eval-truths:                       ## Seconds. Postgres only -- validates the fixture itself
 	docker compose exec api python /app/scripts/run_eval.py --suite truths
@@ -66,5 +69,5 @@ eval-agent:                        ## Route AND answer, graded on one response p
 	@echo "Tens of minutes: every question is a multi-turn conversation with a 20B."
 	docker compose exec api python /app/scripts/run_eval.py --suite agent
 
-eval-routing:                      ## m15's route-only runner. No database, runs anywhere.
+eval-routing:                      ## Grade routes only. No database, runs anywhere.
 	docker compose exec api python /app/scripts/run_routing_eval.py

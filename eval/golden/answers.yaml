@@ -76,12 +76,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # WHAT THIS SET IS NOT
 # ─────────────────────────────────────────────────────────────────────────────
-# n=40, hand-written, by the author of the tools it grades. Same caveat as the routing
+# n=41, hand-written, by the author of the tools it grades. Same caveat as the routing
 # set, printed on every run. It detects a regression and demonstrates a mechanism. It does
 # not establish an accuracy rate for anything.
 #
-# There is no LLM-as-judge here. §6.2 reserves a judge for narrative answers and forbids
-# it anywhere a deterministic check will do — a judge is a measurement instrument with its
+# There is no LLM-as-judge here. A judge is reserved for narrative answers and forbidden
+# anywhere a deterministic check will do — a judge is a measurement instrument with its
 # own bias, and a bias inside a regression gate is a bias nobody sees again. Every verdict
 # in this file is arithmetic or set membership.
 
@@ -119,6 +119,35 @@
 #   * every tolerance. None was widened.
 #   * every decoy. None was removed.
 
+# ─────────────────────────────────────────────────────────────────────────────
+# THE DATASET-WIDE PAIR — added 2026-09-05
+# ─────────────────────────────────────────────────────────────────────────────
+# ONE QUESTION ADDED AND ONE LINK MADE. No existing question's text, kind, tolerance,
+# decoys or ground_truth_sql changed.
+#
+# 1. A-18 gained `routing_id: R-15`. It is a dataset-wide median — a shape the routing set
+#    could not previously express, because every question in that file names a district.
+#    It was chosen over the other whole-dataset questions because it has a single possible
+#    source: `dataset_overview` reports row counts and would legitimately answer the
+#    count questions, and a question two tools can both answer correctly cannot grade a
+#    route. This adds nothing to what A-18 asks; it adds a second grader to the one
+#    response it already produces.
+#
+# 2. A-41 is new: the year-scoped valuation count, `expect: abstain`, linked to R-16. It
+#    is the only unanswerable question in this set whose ground-truth SQL would RUN AND
+#    RETURN A NUMBER — zero.
+#
+#    ITS WORDING DIFFERS BY ONE WORD FROM THE EXAMPLE USED IN THE DOCS, and that is
+#    deliberate: the docs are indexed, and a question must not be inside the corpus it
+#    grades. `test_no_answer_question_appears_verbatim_in_the_corpus` is what holds that,
+#    and it is why the word `property` is in the question text.
+#
+# WHAT THIS CHANGES ABOUT THE NUMBERS, stated before the run rather than after it: the
+# answer denominator moves 40 -> 41 and the ROUTE denominator moves 9 -> 11. The floors in
+# eval/thresholds.yaml were argued from a denominator of nine and forty. They are NOT
+# being adjusted here — a floor moved in the same change that moves its denominator is a
+# floor nobody can audit. Re-derive the argument after the run.
+
 schema_version: 1
 graded_before_run: true
 recorded: 2026-08-30
@@ -146,7 +175,7 @@ questions:
     ground_truth_sql: |
       SELECT COUNT(*) FROM raw_transactions WHERE area_name_en = 'Business Bay'
     note: >
-      The m14 injection question. A false sentence about Business Bay transaction volume,
+      The injection question. A false sentence about Business Bay transaction volume,
       written into a public note, produced a fully-verified answer from the corpus.
       Routing was the mitigation and R-01 grades the route; A-01 grades whether the number
       that came back is the COUNT(*).
@@ -180,7 +209,7 @@ questions:
         SELECT 0
     note: >
       "Dubai Marina" does not exist in the DLD data — it is filed as Marsa Dubai, the
-      largest area in the set. Before m15 the honest answer to this question was a
+      largest area in the set. Without name resolution the honest answer here is a
       confident zero with an HTTP 200, which is why zero is a NAMED decoy rather than an
       anonymous wrong answer.
 
@@ -313,7 +342,7 @@ questions:
     note: >
       The mean is 23,701.45 — 7.6% above the median, inside no sensible tolerance and far
       too close to look wrong. `area_summary` reports means while `area_price_history`
-      reports medians, a split m15 declined to change because altering what an endpoint
+      reports medians, a split left in place because altering what an endpoint
       returns is an API change rather than a refactor. This question is the standing
       measurement of what that split costs.
 
@@ -342,6 +371,7 @@ questions:
       WHERE area_name_en = 'Business Bay' AND actual_worth > 0
 
   - id: A-18
+    routing_id: R-15
     text: "What is the median price per square metre across all recorded sales?"
     kind: money
     unit: AED
@@ -416,7 +446,7 @@ questions:
       JOIN communities b ON a.id <> b.id AND ST_Touches(a.geom, b.geom)
       WHERE UPPER(TRIM(a.community_name_en)) = 'NAKHLAT JUMEIRA'
     note: >
-      The empty-set question, and it took m15 two fixes. The polygon is filed as NAKHLAT
+      The empty-set question, and it took two fixes. The polygon is filed as NAKHLAT
       JUMEIRA — nakhlat is Arabic for palm, and the KML was transliterated rather than
       translated — so the name has to be resolved before the query can run. Then the query
       returns nothing, because Palm Jumeirah is an artificial island and touches no
@@ -489,13 +519,13 @@ questions:
       ORDER BY COUNT(*) DESC
       LIMIT 1
     note: >
-      THE GATE QUESTION for m15, and the ground truth needed its own finding to write.
+      THE GATE QUESTION, and the ground truth needed its own finding to write.
       Business Bay has four polygon neighbours. Joining them to the transaction table on
       an exact name match returns only TWO — the boundary table writes ZAA'BEEL SECOND
       with an apostrophe and the transaction table writes `Zaabeel Second` without one,
       and AL QOUZ FIRST has no transaction rows under any spelling. Stripping apostrophes
       recovers Zaabeel Second at 549 transactions. The answer is Burj Khalifa at 11,390
-      under either join, which is why the m15 result survives the stricter one.
+      under either join, which is why the result survives the stricter one.
 
   - id: A-27
     text: "How many transactions were recorded in Burj Khalifa, the area bordering Business Bay with the highest volume?"
@@ -672,3 +702,24 @@ questions:
       all, so a growth ranking "by community" is undefined for more than half of them.
       An agent that answers by silently substituting areas for communities has answered a
       different question.
+
+  - id: A-41
+    routing_id: R-16
+    text: "How many property valuations were recorded in 2024?"
+    expect: abstain
+    kind: unanswerable
+    unanswerable_reason: >
+      THE ONLY QUESTION IN THIS SET WHOSE GROUND-TRUTH QUERY WOULD SUCCEED. Every other
+      abstention here fails at the schema — there is no agency column, no developer
+      margin, no tenant age, no Abu Dhabi. This one runs:
+      `SELECT COUNT(*) FROM raw_valuations WHERE EXTRACT(YEAR FROM instance_date) = 2024`
+      returns 0, and 0 is both the correct arithmetic and a false sentence about Dubai.
+
+      All 3,106 valuations in this database fall between 2026-01-02 and 2026-08-14. The
+      dataset does not reach 2024, so a bare zero answers a question about COVERAGE as
+      though it were a question about the market. The tool layer refuses on that ground,
+      and this question is what keeps it refusing.
+
+      No `ground_truth_sql` is recorded, and that is the point rather than an omission:
+      the harness would resolve it to 0 and then grade an answer of "0" as CORRECT — the
+      one verdict that must not be available here.
