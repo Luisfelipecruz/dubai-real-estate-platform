@@ -1,10 +1,10 @@
 """The tabular layer: every exact number this platform can state, in one place.
 
-WHY THIS FILE EXISTS, AND WHY IT IS A REFACTOR RATHER THAN A NEW MODULE
------------------------------------------------------------------------
-Until m15 the SQL lived inline in `routers/areas.py` and `routers/communities.py`, which
-was fine while a route was the only caller. m15 adds a second caller -- the agent tool
-layer -- and the two must not be allowed to drift apart.
+WHY THE SQL LIVES HERE AND NOT IN THE ROUTERS
+----------------------------------------------
+Inline SQL in `routers/areas.py` and `routers/communities.py` was fine while a route was
+the only caller. The agent tool layer is a second caller, and the two must not be allowed
+to drift apart.
 
 That is not a tidiness argument. The entire premise of the routing work is that a
 question about transaction volume is a `COUNT(*)` over an indexed column and is therefore
@@ -31,8 +31,8 @@ THE MEDIAN/MEAN SPLIT IS INHERITED, NOT INVENTED
 right-skewed -- one area carries a single 6.75 bn transaction -- while `area_summary`
 reports `AVG`. That inconsistency predates this file and is preserved deliberately:
 changing what `GET /areas/{name}/summary` returns is an API change, not a refactor, and
-a refactor that quietly alters a number is the worst kind. It is recorded in
-docs/agent-orchestration.md as a known wart rather than silently fixed here.
+a refactor that quietly alters a number is the worst kind. It is a known wart, left
+visible rather than fixed in passing.
 """
 
 import difflib
@@ -64,10 +64,8 @@ ADJACENCY_PREDICATES = {
 class UnknownArea(LookupError):
     """No area matched, and these are the closest names that exist.
 
-    Carries the candidates rather than just failing. IMPLEMENTATION-PLAN.md §5.3 lists
-    "unknown area name -> fuzzy-match, return candidates" as a recovery path, and a bare
-    "not found" gives the agent nothing to recover WITH -- it will either invent a name
-    or report zero as a fact.
+    Carries the candidates rather than just failing. A bare "not found" gives the agent
+    nothing to recover WITH, and it will either invent a name or report zero as a fact.
     """
 
     def __init__(self, requested: str, candidates: list[str]):
@@ -247,8 +245,18 @@ async def require_area(conn: AsyncConnection, name: str) -> AreaMatch:
 # ── aggregates ──────────────────────────────────────────────────────────────
 
 
-async def list_areas(conn: AsyncConnection) -> list[AreaOverview]:
+async def list_areas(
+    conn: AsyncConnection, year: int | None = None
+) -> list[AreaOverview]:
     """Every area with its cross-dataset counts and averages.
+
+    **`year` restricts every count to one calendar year.** It was added because
+    `list_areas` is the tool that answers "which areas had the most transactions", and the
+    most common form of that question names a year. Without the filter the ranking is a
+    LIFETIME one -- 1977 to 2026 for sales -- and a model handed it will happily present it
+    as the answer to a question about 2024. The three datasets each carry their own date
+    column (`instance_date`, `contract_start_date`, `instance_date`), so the filter is
+    applied per subquery rather than once at the end.
 
     ONE ROW PER AREA NAME, not per `(area_id, area_name_en)` pair. Two things forced it:
     `Mushrif` exists under two different `area_id`s in the DLD data (404 with 33
@@ -263,6 +271,10 @@ async def list_areas(conn: AsyncConnection) -> list[AreaOverview]:
     `area_id` is a representative (`MIN`) and is NOT unique for `Mushrif`; the name is the
     key the rest of the API uses.
     """
+    # Bound parameters, never interpolation -- and NULL disables each clause, so one
+    # statement serves both shapes rather than two nearly-identical strings drifting apart.
+    # The CASTs are load-bearing: asyncpg prepares server-side, and a bare `$1 IS NULL`
+    # gives the planner nothing to infer a type from (AmbiguousParameterError).
     rows = await conn.execute(
         text("""
             WITH t AS (
@@ -273,6 +285,8 @@ async def list_areas(conn: AsyncConnection) -> list[AreaOverview]:
                        AVG(actual_worth) AS avg_price
                   FROM raw_transactions
                  WHERE area_name_en IS NOT NULL
+                   AND (CAST(:year AS INTEGER) IS NULL
+                        OR EXTRACT(YEAR FROM instance_date) = CAST(:year AS INTEGER))
                  GROUP BY 1
             ), r AS (
                 SELECT UPPER(TRIM(area_name_en)) AS norm,
@@ -282,6 +296,8 @@ async def list_areas(conn: AsyncConnection) -> list[AreaOverview]:
                        AVG(annual_amount) AS avg_amount
                   FROM raw_rent_contracts
                  WHERE area_name_en IS NOT NULL
+                   AND (CAST(:year AS INTEGER) IS NULL
+                        OR EXTRACT(YEAR FROM contract_start_date) = CAST(:year AS INTEGER))
                  GROUP BY 1
             ), v AS (
                 SELECT UPPER(TRIM(area_name_en)) AS norm,
@@ -290,6 +306,8 @@ async def list_areas(conn: AsyncConnection) -> list[AreaOverview]:
                        COUNT(*)          AS cnt
                   FROM raw_valuations
                  WHERE area_name_en IS NOT NULL
+                   AND (CAST(:year AS INTEGER) IS NULL
+                        OR EXTRACT(YEAR FROM instance_date) = CAST(:year AS INTEGER))
                  GROUP BY 1
             )
             SELECT
@@ -304,7 +322,8 @@ async def list_areas(conn: AsyncConnection) -> list[AreaOverview]:
             FULL OUTER JOIN r ON t.norm = r.norm
             FULL OUTER JOIN v ON COALESCE(t.norm, r.norm) = v.norm
             ORDER BY (COALESCE(t.cnt, 0) + COALESCE(r.cnt, 0) + COALESCE(v.cnt, 0)) DESC
-        """)
+        """),
+        {"year": year},
     )
     return [
         AreaOverview(
@@ -476,20 +495,17 @@ async def area_summary(conn: AsyncConnection, area_name: str) -> AreaSummary:
 async def typical_annual_rent(conn: AsyncConnection, area_name: str) -> float | None:
     """The MEDIAN annual rent PER PROPERTY. The only rent figure fit to quote.
 
-    Added in m15 because the agent got this wrong in a way that passed every check.
+    This exists because the obvious column is wrong in a way that passes every check.
 
-    Asked what a typical Dubai Marina apartment rents for, the agent routed correctly --
-    resolved the name, called the SQL tool, never touched the corpus -- and answered
-    **AED 550,010**. The true per-property median is **AED 120,000**. It was wrong by
-    4.6x, and the routing eval passed it, because that eval grades the ROUTE and this was
-    the right route.
+    Asked what a typical Dubai Marina apartment rents for, an agent that routes perfectly
+    -- resolves the name, calls the SQL tool, never touches the corpus -- answers
+    **AED 550,010** from `AVG(annual_amount)`. The true per-property median is
+    **AED 120,000**: wrong by 4.6x, with the right route, so route grading passes it.
 
-    The cause is the trap this repository has already documented twice (changelog v0.5.0,
-    G-02 in the retrieval golden set): `annual_amount` is the CONTRACT total and one
-    contract can cover hundreds of properties -- 232 of them in this very area -- each
-    getting its own row carrying the full portfolio amount. `AVG(annual_amount)` is
-    therefore not a rent. `area_summary` exposed it to the agent as `avg_annual_rent` and
-    the agent, reasonably, quoted it.
+    The cause is that `annual_amount` is the CONTRACT total, and one contract can cover
+    hundreds of properties -- 232 of them in this area -- each getting its own row
+    carrying the full portfolio amount. It is not a rent, and anything that exposes it
+    under a name like `avg_annual_rent` will get it quoted as one.
 
     A number that is documented as dangerous in two places and still reaches an answer is
     not a documentation problem. The division belongs in the query, so this function is
@@ -522,8 +538,8 @@ async def community_neighbors(
     rather than the probe. Without an index it is O(n^2): 222 polygons is 49,284 candidate
     pairs. With `idx_communities_geom` the planner runs it in two stages, the GiST index
     answering the bounding-box operator first and the exact predicate refining only the
-    survivors. See docs/polygon-adjacency-plans.md, including the honest finding that at
-    this row count the index buys far less than the raw wall-clock suggests.
+    survivors. At this row count the index buys far less than the raw wall-clock time
+    suggests, which is worth knowing before optimising it further.
     """
     fn = ADJACENCY_PREDICATES[predicate.lower()]
     origin = (

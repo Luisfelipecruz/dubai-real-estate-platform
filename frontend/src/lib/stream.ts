@@ -1,23 +1,17 @@
 /**
  * The Server-Sent Events client for `GET /agent/stream`.
  *
- * ── Why this file exists before the endpoint does ──────────────────────────
+ * ── Why streaming, and why the client is this careful ──────────────────────
  *
- * Plan §11.2 says streaming is step 1 and comes before any React, because `/ask` runs
- * 7.9–20.9 s and an agent run runs 1.4–58.6 s, and a spinner in front of a 58-second run
- * is not a demo. That ordering was not available to this milestone: the endpoint lives in
- * `api/routers/agent.py` and the per-step hook lives in `api/services/agent/executor.py`,
- * and BOTH are claimed by m15's uncommitted manifest. Writing them here would put m18's
- * code inside m15's commit.
+ * An agent run takes 1.4–58.6 s and `/ask` takes 7.9–20.9 s. A spinner in front of a
+ * 58-second run tells the user nothing, so the run reports itself as it happens.
  *
- * So the work was split at the seam that already existed. The *client* half — framing,
- * decoding, ordering, termination — is pure TypeScript that no milestone claims, and it
- * is the half with the interesting failure modes anyway. It is written and tested in
- * full here. The *server* half is deferred to the session after #30–#32 are committed.
+ * The interesting failure modes all live here, in framing and decoding: a frame split
+ * across chunk boundaries, a multi-byte character cut in half, a stream that ends without
+ * `done`. Each is handled and tested below.
  *
- * The contract below is therefore a specification the server must meet, not a
- * description of something already running. `probeStreaming()` asks the live API whether
- * it does, and the page degrades honestly when it does not.
+ * `probeStreaming()` asks the live API whether the endpoint exists, so a deployment
+ * without it degrades honestly instead of hanging.
  *
  * ── Why fetch, and not EventSource ────────────────────────────────────────
  *
@@ -32,6 +26,8 @@ const API_BASE =
   typeof window !== "undefined"
     ? process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
     : process.env.INTERNAL_API_URL || "http://localhost:8000";
+
+import type { AgentStep } from "./copilot";
 
 /** One decoded SSE frame: an event name and its (possibly multi-line) data payload. */
 export interface SSEFrame {
@@ -137,6 +133,15 @@ export interface DoneEvent {
   run_id: string;
   outcome: "answered" | "refused" | "max_steps" | "failed";
   answer: string | null;
+  /**
+   * The complete per-step trace, the same shape `POST /agent/query` returns.
+   *
+   * Optional because the client must keep working against an API build that does not
+   * send it -- the `error` path's synthetic `done` has no steps either. An absent trace
+   * renders as "no steps recorded", which is true of that payload; a WRONG trace
+   * rebuilt from the step/result events would not be.
+   */
+  steps?: AgentStep[];
   categories: string[];
   grounding_warnings: string[];
   timings_ms: { generate: number; tools: number; total: number };

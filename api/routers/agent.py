@@ -1,23 +1,21 @@
 """Multi-step question answering over tools.
 
-The three copilot endpoints answer three different questions and the separation is the
-point:
+Three copilot endpoints answer three different questions:
 
     GET  /search        which passages match this query
-    POST /ask           what do the documents say, with citations that were checked
+    POST /ask           what the documents say, with citations that were checked
     POST /agent/query   work it out, using whichever tools are needed
 
-`/agent/query` earns its place on questions the other two cannot reach at all. "Of the
-areas bordering Business Bay, which has the highest transaction volume?" is a spatial
-predicate joined to an aggregate: it exists in no document at any k in any retrieval
-mode, and it has to be computed. That question is R-11 in `eval/golden/routing.yaml` and
-it is the gate for this milestone.
+`/agent/query` earns its place on questions the other two cannot reach. "Of the areas
+bordering Business Bay, which has the highest transaction volume?" is a spatial predicate
+joined to an aggregate: it exists in no document at any k in any retrieval mode, and has
+to be computed.
 
-It also closes a hole m14 found and could not fix. A false sentence about transaction
-volume, written into a public note, produced a high-confidence answer with every
-grounding check green -- because the answer was faithful to a corpus that was wrong.
-Verification cannot catch that. Routing the question to `COUNT(*)` instead of to prose
-can, and `eval/golden/routing.yaml` grades whether it does.
+It also keeps numeric questions away from prose. Verification can prove an answer is
+faithful to the corpus and cannot prove the corpus is right, so a false sentence written
+into an indexed note produces a confident answer with every grounding check green.
+Routing a count to `COUNT(*)` instead of to retrieved text is the mitigation, and the
+routing fixture grades whether it holds.
 """
 
 import asyncio
@@ -45,8 +43,8 @@ class AgentRequest(BaseModel):
     provider: str | None = Field(
         None,
         pattern="^(local|anthropic)$",
-        description="Override LLM_PROVIDER for this run, so m16 can put the same "
-        "routing set through both backends without restarting anything.",
+        description="Override LLM_PROVIDER for this run, so the same question can go "
+        "through either backend without restarting anything.",
     )
     max_steps: int | None = Field(
         None,
@@ -61,30 +59,27 @@ class AgentRequest(BaseModel):
 async def agent_query(request: AgentRequest):
     """Answer a question by planning over tools, and report every step.
 
-    **A refusal is a 200**, exactly as with `/ask`, and for the same reason: some
-    questions have no answer in this data -- there is no agency column, and no forecast
-    of any kind -- and reporting an honest abstention as a 5xx makes the system look
-    broken when it is behaving best, while making the refusal rate uncollectable from
-    status codes.
+    **A refusal is a 200.** Some questions have no answer in this data -- there is no
+    agency column and no forecast of any kind -- and reporting an honest abstention as a
+    5xx makes the system look broken when it is behaving best, while putting the refusal
+    rate out of reach of anything that reads status codes.
 
-    `outcome` carries the distinction a boolean cannot:
+    `outcome` carries the distinction a status code cannot:
 
         answered   the model produced prose and tools backed it
         refused    it declined, correctly
         max_steps  the cap fired; the answer is PARTIAL and says so
         failed     the provider or the run budget stopped it
 
-    The error codes that ARE errors:
+    The codes that ARE errors:
 
         503  the layer is disabled (LLM_PROVIDER=none), unconfigured, or unreachable
         502  the provider answered with something unusable
         504  the provider did not respond in time
 
-    Latency is measured in seconds, not milliseconds, and the response reports it per
-    step. A local 20B answers one turn in 7-21 s depending on host load, and a run is
-    several turns -- so a three-step run is a minute on a busy machine. That is a
-    property of the model, not of this endpoint, and `timings_ms` splits generation from
-    tool time so the two are never confused.
+    Latency here is seconds, not milliseconds: a local 20B takes 7-21 s per turn and a
+    run is several turns. `timings_ms` splits generation from tool time so the two are
+    never confused.
     """
     async with engine.connect() as conn:
         try:
@@ -101,12 +96,12 @@ async def agent_query(request: AgentRequest):
 def _sse(name: str, payload: dict) -> bytes:
     """One Server-Sent Event frame.
 
-    `event:` then `data:` then a BLANK LINE, and the blank line is the whole protocol --
-    a frame without it is buffered forever by the client and looks like a hung run.
-    `json.dumps` with no newlines because a data field spanning lines would need every
-    continuation prefixed with `data:`; the client
-    (`frontend/src/lib/stream.ts`) joins multi-line data correctly, but there is no reason
-    to make it.
+    `event:`, then `data:`, then a BLANK LINE -- and the blank line is the whole protocol.
+    A frame without it is buffered by the client forever and looks like a hung run.
+
+    `json.dumps` emits no newlines, because a data field spanning lines needs every
+    continuation prefixed with `data:`. The client handles that correctly; there is no
+    reason to make it.
     """
     return f"event: {name}\ndata: {json.dumps(payload, default=str)}\n\n".encode()
 
@@ -119,22 +114,18 @@ async def agent_stream(
 ):
     """The same run as `POST /agent/query`, reported as it happens.
 
-    **This exists because of a measurement, not because streaming is fashionable.** A run
-    on the local 20B is 7-21 seconds PER TURN and several turns; the captured worst case
-    is 66 seconds. Plan §12.5 is blunt about it: 66 seconds is not a product experience,
-    whatever it looks like. The fix is not to make the model faster -- it is to stop the
-    page being blank while it works.
+    **This exists because of a measurement.** A run on the local 20B is 7-21 seconds per
+    turn and several turns, with a worst case of 66 seconds. The fix is not a faster
+    model -- it is to stop the page being blank while it works.
 
-    **GET, not POST**, and the question is a query parameter. `EventSource` only issues
-    GETs, and the client half was written against that constraint before this existed.
+    **GET, not POST**, with the question as a query parameter, because `EventSource` only
+    issues GETs.
 
-    **The event names and payload keys are the client's contract.** They are defined and
-    unit-tested in `frontend/src/lib/stream.ts`, which shipped in m18 with no server to
-    talk to. This emits what that parser already reads: `step`, `result`, `done`, `error`.
+    **The event names and payload keys are the client's contract**, parsed and unit-tested
+    in `frontend/src/lib/stream.ts`: `step`, `result`, `done`, `error`.
 
-    **`done` is always sent**, including on failure, and `stream.ts` throws
-    `StreamIncomplete` if the body closes without it. A truncated stream and a finished
-    run look identical otherwise -- see `progress.ts` rule 3.
+    **`done` is always sent**, including on failure. The client throws if the body closes
+    without it, because a truncated stream and a finished run are otherwise identical.
     """
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -156,6 +147,16 @@ async def agent_stream(
                     "answer": result.answer,
                     "categories": result.categories,
                     "grounding_warnings": result.grounding_warnings,
+                    # The COMPLETE per-step record, identical to what POST /agent/query
+                    # returns. Without it the streaming page has no trace to reveal and
+                    # reports "no steps recorded" under a status list naming the step that
+                    # just ran.
+                    #
+                    # It cannot be rebuilt from the `step` and `result` events: those carry
+                    # the TOOL's duration, while a step's `latency_ms` is the model turn
+                    # that chose it. Deriving one from the other puts a wrong number in the
+                    # panel, which is worse than an absent one.
+                    "steps": [s.model_dump() for s in result.steps],
                     "timings_ms": result.timings_ms.model_dump(),
                     "usage": {
                         "steps": result.usage.steps,
@@ -166,10 +167,10 @@ async def agent_stream(
                     },
                 }))
             except LLMError as exc:
-                # A provider failure is an `error` event AND a `done`, not a 502. The
-                # status line has already been sent, so there is no status code left to
-                # change -- and a stream that stops without `done` is indistinguishable
-                # from a network drop.
+                # A provider failure is an `error` event AND a `done`, not a 502: the
+                # status line has already gone out, so there is no code left to change,
+                # and a stream that stops without `done` cannot be told from a dropped
+                # connection.
                 logger.warning("stream run failed: %s", exc)
                 await queue.put(_sse("error", {"message": str(exc)}))
                 await queue.put(_sse("done", {
@@ -189,8 +190,8 @@ async def agent_stream(
                 yield frame
         finally:
             # A client that disconnects cancels this generator. The run itself is NOT
-            # cancelled: it is most of a minute of real work and it still has an
-            # agent_runs row to write. `_emit` already swallows the failed put.
+            # cancelled: it is most of a minute of real work and still has an `agent_runs`
+            # row to write. The event sink already swallows the failed put.
             if not task.done():
                 await task
 
@@ -200,9 +201,9 @@ async def agent_stream(
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            # nginx and friends buffer text/event-stream by default, which turns a live
-            # stream into one big response delivered at the end -- the exact failure this
-            # endpoint exists to prevent, and invisible in local testing.
+            # nginx and friends buffer text/event-stream by default, turning a live
+            # stream into one response delivered at the end -- the exact failure this
+            # endpoint exists to prevent, and invisible when testing without a proxy.
             "X-Accel-Buffering": "no",
         },
     )
@@ -212,9 +213,9 @@ async def agent_stream(
 async def list_tools():
     """The tool catalogue, exactly as the model receives it.
 
-    Returns the generated JSON Schema rather than a description of it. The schema is
-    prompt content -- it is what the model reads when deciding which tool to call -- so
-    reviewing it as prose would be reviewing a paraphrase of the thing that matters.
+    Returns the generated JSON Schema rather than a description of it. The schema is prompt
+    content -- it is what the model reads when choosing a tool -- so reviewing a prose
+    summary would mean reviewing a paraphrase of the thing that matters.
     """
     return {
         "provider": registry.configured_provider(),
@@ -243,12 +244,11 @@ async def list_runs(
 ):
     """Recent runs, plus aggregates over `agent_runs`.
 
-    This is what makes the milestone's claims checkable instead of asserted. Routing
-    accuracy, the refusal rate, how often the step cap fires and how many numbers reached
-    an answer without appearing in any tool result are all one GROUP BY over this table --
-    the same shape `/ask/costs` uses over `llm_calls`, and for the same reason.
+    Routing accuracy, the refusal rate, how often the step cap fires, and how many numbers
+    reached an answer without appearing in any tool result are all one GROUP BY over this
+    table.
 
-    `categories` is the routing evidence: a run that answered R-01 with `rag` alone got
+    `categories` is the routing evidence: a numeric question answered from `rag` alone got
     the right shape of answer from the wrong place.
     """
     where = "WHERE outcome = :outcome" if outcome else ""
@@ -290,9 +290,9 @@ async def list_runs(
                 {**params, "limit": limit},
             )
         except Exception as exc:
-            # The table lives in migration 0003. "Not migrated yet" is a configuration
-            # state with an exact remedy, and reporting it as a 500 sends whoever hits it
-            # to read a traceback instead of running one command.
+            # "Not migrated yet" is a configuration state with an exact remedy. Reporting
+            # it as a 500 sends whoever hits it to read a traceback instead of running one
+            # command.
             if "agent_runs" in str(exc):
                 raise HTTPException(
                     status_code=503,
@@ -315,12 +315,11 @@ async def list_runs(
     }
 
 
-# ── m20: the observability endpoints ────────────────────────────────────────
+# ── observability ───────────────────────────────────────────────────────────
 #
-# The query layer landed months of session-time before these did, with its own tests
-# against the live table. These are thin on purpose: plan §13.3 says no number may be
-# invented in the browser, and the same rule applies here -- a router that computed a
-# rate would be a second place rates are defined.
+# These handlers are thin on purpose. Every rate is defined once, in
+# `services/observability/`, which has its own tests against the live table. A router that
+# computed one would be a second place rates are defined, and the two would drift.
 
 
 @router.get("/agent/runs/timeseries")
@@ -330,14 +329,14 @@ async def runs_timeseries(
 ):
     """Rates over time, with the gaps left as gaps.
 
-    This is the endpoint that makes `/copilot/runs` a panel rather than a log. The
-    lifetime figure it currently shows -- 29.5% refusals, 11.3% tool errors -- is the mean
-    of a line that moved: the refusal rate more than doubled inside one recorded session
-    (M-67), and the most recent hour has run a 40% tool error rate against that 11.3%.
+    A lifetime figure is the mean of a line that moves, and it can be true at no point in
+    the period it covers: a refusal rate that doubles within a day barely shifts it. Rates
+    per interval are what make that visible.
 
     An interval with no runs reports `null`, never `0%`. A percentile over fewer than 20
-    runs reports `null`, because `percentile_disc(0.95)` is the maximum below that and
-    reporting a maximum under the name p95 is the specific lie the floor guards against.
+    runs also reports `null`, because `percentile_disc(0.95)` returns the maximum below
+    that sample size, and publishing a maximum under the name p95 is the lie the floor
+    exists to prevent.
     """
     from datetime import UTC, datetime, timedelta
 
@@ -386,11 +385,10 @@ async def runs_timeseries(
 async def agent_health(bucket: str = Query("hour", pattern="^(hour|day)$")):
     """The two most recent populated buckets, compared -- with the denominators.
 
-    Every trend carries `current_n`, `previous_n` and `resolution`, and a movement
-    smaller than the coarser sample's own resolution reports `indistinguishable` rather
-    than a direction. That is not decoration: the first working version of this raised
-    four alarms off five runs (M-81), and one of them survived to be caught later by this
-    milestone's own live invariant.
+    Every trend carries `current_n`, `previous_n` and `resolution`. A movement smaller than
+    the coarser sample's own resolution reports `indistinguishable` rather than a
+    direction, because at n=3 the finest change expressible is 33 points and any arrow
+    drawn from it is noise given a name.
     """
     from services.observability import queries as obs
 
@@ -433,10 +431,9 @@ async def agent_health(bucket: str = Query("hour", pattern="^(hour|day)$")):
 async def tool_stats():
     """Which tool owns the failures -- or an honest statement that nothing can say yet.
 
-    THREE STATES, and the middle one is why this endpoint is not just a GROUP BY. Before
-    migration 0005 the table does not exist; after it, and before any run, the table is
-    empty. "Exists and empty" is not "no errors", and the two render identically unless
-    something says so.
+    THREE STATES, and the middle one is why this is not just a GROUP BY. The table may be
+    absent, or present and empty, or populated. "Exists and empty" is not "no errors", and
+    the two render as the same empty chart unless something says which one it is.
     """
     from services.observability import queries as obs
 

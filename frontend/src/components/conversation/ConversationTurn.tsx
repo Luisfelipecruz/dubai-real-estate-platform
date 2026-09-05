@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Info } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import { EvidenceTrace } from "@/components/copilot/EvidenceTrace";
+import { RichText } from "@/components/copilot/RichText";
 import type { AgentStep } from "@/lib/copilot";
 import type { ProgressState } from "@/lib/progress";
 import { StatusLine } from "./StatusLine";
@@ -14,15 +15,15 @@ import { StatusLine } from "./StatusLine";
  *
  * ── The contradiction this component resolves ─────────────────────────────
  *
- * m18's thesis is render the EVIDENCE — the tool trace is the differentiator and §11.3
- * argues it is the thing a reviewer wants. m19 asks for the opposite: hide the
- * machinery. Both are right, because they are for different people, and the resolution
- * is PROGRESSIVE DISCLOSURE, NOT DELETION (§12.1).
+ * Two audiences want opposite things. A reviewer wants the tool trace — it is the
+ * evidence, and the most interesting part of the system. Someone asking about Dubai
+ * property wants an answer without the machinery in front of it. Both are right, and the
+ * resolution is PROGRESSIVE DISCLOSURE, NOT DELETION.
  *
  * So: the default view is an answer. One button reveals the complete, unchanged
- * `EvidenceTrace` — the same component m18 shipped, with the same per-step costs, the
- * same raw payloads, and the same failed calls shown at the same weight as successful
- * ones. Nothing is summarised on the way out and nothing is filtered.
+ * `EvidenceTrace` — the same per-step costs, the same raw payloads, and failed calls
+ * shown at the same weight as successful ones. Nothing is summarised on the way out and
+ * nothing is filtered.
  *
  * THE LINE THAT MUST NOT BE CROSSED: if the evidence is not reachable in one click from
  * every answer, this component has failed even if the page looks better. The toggle is
@@ -36,6 +37,35 @@ import { StatusLine } from "./StatusLine";
  * itself, and hiding one behind a click would be suppressing it. `AnswerPanel` makes the
  * same call for the same reason.
  */
+/**
+ * What the button says, counted from THE SAME ARRAY THE PANEL RENDERS.
+ *
+ * It used to count progress lines with a step number, which is one per TOOL step --
+ * progress.ts gives a line belonging to the run as a whole step 0, and "Wrote the answer"
+ * is one of those. The panel below renders every executor step including the synthesis
+ * turn that only reasoned, so the button read "2 steps" over a list ending at step 3.
+ *
+ * `steps` is present whenever this button is: the `done` frame carries it and the /ask
+ * route has no toggle. The line count remains the fallback so a run that arrives without
+ * steps still says something true rather than zero.
+ *
+ * A failure is counted as a STEP that contains one, not as a failed call, because
+ * "3 steps, 1 failed" is read as one failed step -- and a single step can make several
+ * calls.
+ */
+function countSteps(steps: AgentStep[], state: ProgressState) {
+  if (steps.length > 0) {
+    return {
+      stepCount: steps.length,
+      failedSteps: steps.filter((s) => s.tool_calls.some((c) => !c.ok)).length,
+    };
+  }
+  return {
+    stepCount: state.lines.filter((l) => l.step > 0).length,
+    failedSteps: state.failures,
+  };
+}
+
 export function ConversationTurn({
   question,
   state,
@@ -56,6 +86,7 @@ export function ConversationTurn({
   streamingAvailable?: boolean;
 }) {
   const [showEvidence, setShowEvidence] = useState(false);
+  const { stepCount, failedSteps } = countSteps(steps, state);
 
   const running = state.status === "working" || state.status === "idle";
   const body = (state.answer ?? state.streamedText).trim();
@@ -72,7 +103,7 @@ export function ConversationTurn({
           {/* The honesty note about the non-streaming path. Without `/agent/stream` the
               whole run arrives in one response at the end, so these lines all appear at
               once when it does — they are not a live feed and this says so. Replaying
-              them on a timer to look live is the one thing §12.3 forbids outright. */}
+              them on a timer to look live is the one thing this surface must never do. */}
           {!streamingAvailable && (
             <p
               data-testid="not-live-notice"
@@ -93,7 +124,7 @@ export function ConversationTurn({
               testId="turn-empty"
               tone="warn"
               title="I gathered the data but could not write the summary."
-              // M-47, and §12.4: hiding the machinery is exactly what turns this run
+              // Hiding the machinery is exactly what turns this run
               // into a blank screen after 66 seconds. The findings are real and the
               // button below reaches them.
               body="This is a known defect in the agent, not a problem with your question. The steps below did run and their results are real — the final write-up is what went missing. Open the working to read what was found."
@@ -132,7 +163,7 @@ export function ConversationTurn({
               data-testid="turn-body"
               className="whitespace-pre-wrap text-sm leading-relaxed text-[--foreground]"
             >
-              {body}
+              <RichText text={body} />
             </div>
           )}
 
@@ -177,18 +208,15 @@ export function ConversationTurn({
               )}
               {showEvidence ? "Hide the working" : "Show the working"}
               <span className="font-normal">
-                ({state.lines.filter((l) => l.step > 0).length} step
-                {state.lines.filter((l) => l.step > 0).length === 1 ? "" : "s"}
-                {state.failures > 0 &&
-                  `, ${state.failures} failed`}
-                )
+                ({stepCount} step{stepCount === 1 ? "" : "s"}
+                {failedSteps > 0 && `, ${failedSteps} failed`})
               </span>
             </button>
 
             {showEvidence && (
               <div className="space-y-4 pt-4" data-testid="evidence-panel">
                 {/* The plain-language account of what ran, and then the complete,
-                    unmodified m18 trace underneath it. */}
+                    unmodified evidence trace underneath it. */}
                 <StatusLine state={state} />
                 <EvidenceTrace steps={steps} />
               </div>

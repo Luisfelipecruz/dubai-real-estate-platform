@@ -3,49 +3,30 @@
  *
  * ── What this file is, and what it deliberately is not ─────────────────────
  *
- * Plan §12.3 draws a line through the middle of m19: "The mapping from tool name to
- * phrase is presentation; the timing must come from the stream." This file is the
- * presentation half, and it is written so that it CANNOT supply the timing half.
+ * A reducer. It has no clock, no timer, no `setTimeout`, and no knowledge of how many
+ * steps a run will take. It turns events that have already happened into sentences, and
+ * if no event has arrived it has nothing to say — which is the entire guarantee.
  *
- * It is a reducer. It has no clock, no timer, no `setTimeout`, and no knowledge of how
- * many steps a run will take. It converts events that have already happened into
- * sentences. If no event has arrived, it has nothing to say — which is the entire
- * guarantee. A scripted sequence of plausible statuses on a timer would be §11.9.2's
- * typewriter animation wearing a different hat, and the only reliable way to not write
- * one is to build the thing that produces the words with no ability to advance itself.
- *
- * ── Why the split had to happen here ──────────────────────────────────────
- *
- * m19's server half — `GET /agent/stream` and the per-step hook — lives in
- * `api/routers/agent.py` and `api/services/agent/executor.py`, both claimed by m15's
- * uncommitted manifest, and the page that would render this lives in
- * `frontend/src/app/copilot/page.tsx`, claimed by m18's. §A.6 stages
- * `frontend/src/components/copilot/` as a DIRECTORY, so a new file dropped in there
- * would be swept into m18's commit. `frontend/src/lib/progress.ts` and
- * `frontend/src/components/conversation/` are claimed by nothing and swept by nothing.
- *
- * Same seam m18 found for `stream.ts`, and the same reason it is worth taking: this half
- * holds the honesty constraints, which are the part worth getting wrong slowly.
+ * A scripted sequence of plausible statuses on a timer would look like progress and be a
+ * lie about latency. The only reliable way not to write one is to build the thing that
+ * produces the words with no ability to advance itself.
  *
  * ── The four rules, all of them measured ──────────────────────────────────
  *
- *  1. A FAILED TOOL NEVER SHOWS THE SUCCESS PHRASE. M-62 measured a 10.3% tool error
- *     rate — 31 failures in 301 calls. One call in ten is a failure, and a status line
- *     that cannot express one is claiming a reliability the system does not have. The
- *     captured 66-second run in `__fixtures__/agent-answered-empty.json` calls
- *     `resolve_area_name` twice and the second attempt errors.
+ *  1. A FAILED TOOL NEVER SHOWS THE SUCCESS PHRASE. The measured tool error rate is
+ *     10.3% — 31 failures in 301 calls. One call in ten fails, and a status line that
+ *     cannot express a failure is claiming a reliability the system does not have.
  *
- *  2. AN EMPTY ANSWER IS A NAMED OUTCOME, NOT A BLANK SCREEN. M-47. Hiding the tool
- *     trace is what makes this urgent: today an empty run still shows seven step cards,
- *     so the user can see work happened. Behind a conversational surface the same run is
- *     a blank screen after 66 seconds unless this file says otherwise.
+ *  2. AN EMPTY ANSWER IS A NAMED OUTCOME, NOT A BLANK SCREEN. A run can gather
+ *     everything and produce no prose. With the tool trace collapsed, that is a blank
+ *     screen after 66 seconds unless this file says otherwise.
  *
  *  3. A TRUNCATED STREAM IS NOT A FINISHED RUN. `readSSE` throws `StreamIncomplete`
  *     when the body closes without `done`; `markIncomplete` records that as its own
  *     status. "Still working" and "died at step 4" look identical otherwise.
  *
  *  4. NO NUMBER THAT DID NOT ARRIVE IN AN EVENT. `tookMs` is copied from a `result`
- *     event or left null. There is no estimate, no projected total, and no percentage.
+ *     event or left null. There is no estimate, no projected total, no percentage.
  */
 
 import type {
@@ -63,8 +44,8 @@ import type { StreamEvent } from "./stream";
  * failed. The failure sentence is not optional and is not a softened version of the
  * success sentence — see rule 1 above.
  *
- * The names are the nine tools registered in `api/services/agent/tools.py`. A tool that
- * is not in this table is NOT given an invented description; see `PHRASES_UNKNOWN`.
+ * The keys are the tools registered in `api/services/agent/tools.py`. A tool absent from
+ * this table is NOT given an invented description; see `PHRASES_UNKNOWN`.
  */
 interface Phrases {
   working: string;
@@ -118,7 +99,39 @@ const PHRASES: Record<string, Phrases> = {
     done: "Checked what data exists",
     failed: "Could not check what data exists",
   },
+  // Answers questions about the whole dataset rather than one area, so the phrase must
+  // not say "area" — that distinction is the reason the tool exists.
+  dataset_aggregate: {
+    working: "Adding up the whole dataset…",
+    done: "Added up the whole dataset",
+    failed: "Could not add up the dataset",
+  },
 };
+
+/**
+ * Every tool the agent can call, as the API registers it.
+ *
+ * **This list is duplicated on purpose and a test asserts it is complete.** When a tool
+ * is registered on the server and has no phrase here, it narrates as "Finished a step" —
+ * the fallback working exactly as designed, silently, for as long as nobody notices. What
+ * was missing was anything that could FAIL when the two lists drift apart.
+ *
+ * A frontend unit test cannot call `GET /agent/tools`, so this is the same deliberate
+ * duplication `test_main.py` uses for the router list: adding a tool breaks a test whose
+ * message tells you to write its sentence.
+ */
+export const KNOWN_TOOLS = [
+  "resolve_area_name",
+  "area_summary",
+  "area_price_history",
+  "list_areas",
+  "area_neighbors",
+  "ask_documents",
+  "search_documents",
+  "corpus_stats",
+  "dataset_overview",
+  "dataset_aggregate",
+] as const;
 
 /**
  * What an UNRECOGNISED tool gets.
@@ -169,8 +182,8 @@ export interface ProgressLine {
   text: string;
   /**
    * The real tool name, carried for the evidence view and for tests.
-   * The status line does not render it — that is the whole request — but nothing is
-   * dropped on the floor either. §12.1: collapsed is not deleted.
+   * The status line does not render it — the machinery stays out of the answer — but
+   * nothing is dropped on the floor either. Collapsed is not deleted.
    */
   tool: string | null;
   /** Measured, from a `result` event. Null until one arrives. Rule 4. */
@@ -321,9 +334,9 @@ export function reduceProgress(
 /**
  * The last line, which is the one a non-engineer actually reads.
  *
- * Four outcomes and none of them is "done". §12.6: a refusal must not read as a failure
- * or as an answer, and a capped run must say it is partial in words someone who has not
- * read this repository understands.
+ * Four outcomes and none of them is "done". A refusal must not read as a failure or as an
+ * answer, and a capped run must say it is partial — in words someone who has never read
+ * this repository will understand.
  */
 function closingLine(outcome: AgentOutcome, emptyAnswer: boolean): ProgressLine {
   if (emptyAnswer) {
@@ -331,7 +344,7 @@ function closingLine(outcome: AgentOutcome, emptyAnswer: boolean): ProgressLine 
       key: "closing",
       step: 0,
       tone: "failed",
-      // Rule 2. This is the sentence that stands between M-47 and a blank screen.
+      // Rule 2. This sentence is what stands between an empty answer and a blank screen.
       text: "Gathered the data but could not write the summary",
       tool: null,
       tookMs: null,
@@ -442,7 +455,7 @@ export function eventsFromResponse(res: AgentResponse): StreamEvent[] {
         took_ms: call.duration_ms,
         // Per-call cost is not in `ToolInvocation` — the executor prices a STEP, not a
         // tool. Null means unpriced, and inventing a division here would be exactly the
-        // browser arithmetic §11.4.4 forbids.
+        // browser arithmetic, which this layer does not do.
         cost_usd: null,
         result: call.result,
       });

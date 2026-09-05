@@ -1,16 +1,13 @@
 /**
- * Tests for the progress reducer.
+ * Every status line must be traceable to a real event.
  *
- * Plan §12.7 gate 2 says: "Every status line is traceable to a real SSE event; a test
- * drives the client with an out-of-order and a truncated stream and asserts nothing is
- * invented." That gate does not need the server, so it is closed here rather than
- * deferred with the rest of m19.
+ * The fixtures are unedited captures of real runs. `agent-answered-empty.json` is a
+ * 66.0-second run — seven steps, six tool calls, one of them failing, and an empty answer
+ * body — which puts three of the things this surface must never paper over into a single
+ * response.
  *
- * The happy-path cases are driven from `__fixtures__/agent-answered-empty.json`, which
- * is an unedited capture of a real 66.0-second run (M-60) — seven steps, six tool calls,
- * one of them a genuine `resolve_area_name` failure, and `outcome: answered` with
- * `answer: null`. It is the single most useful fixture in the repository because it
- * contains three of the four things §12 says must not be papered over, all at once.
+ * A test written against a hand-made object would pass while the real shape drifted, so
+ * these use what the API actually returned.
  */
 
 import ANSWERED_EMPTY from "./__fixtures__/agent-answered-empty.json";
@@ -19,6 +16,7 @@ import REFUSED from "./__fixtures__/agent-refused.json";
 import type { AgentResponse } from "./copilot";
 import {
   INITIAL_PROGRESS,
+  KNOWN_TOOLS,
   eventsFromResponse,
   isKnownTool,
   markIncomplete,
@@ -104,7 +102,7 @@ describe("the real 66-second run", () => {
     expect(step4?.text).not.toBe("Matched the area to the official name");
   });
 
-  it("names M-47 instead of rendering a blank screen", () => {
+  it("names the empty answer instead of rendering a blank screen", () => {
     expect(EMPTY_RUN.outcome).toBe("answered");
     expect(EMPTY_RUN.answer).toBeNull();
     expect(state.emptyAnswer).toBe(true);
@@ -121,7 +119,7 @@ describe("the real 66-second run", () => {
   });
 
   it("keeps every tool name on the line, for the evidence view", () => {
-    // §12.1: collapsed is not deleted. The status line does not render `tool`, but
+    // Collapsed is not deleted. The status line does not render `tool`, but
     // nothing is thrown away either.
     const tools = state.lines.filter((l) => l.step > 0).map((l) => l.tool);
     expect(tools).toEqual([
@@ -175,7 +173,7 @@ describe("the outcomes that are not an answer", () => {
     expect(state.groundingWarnings[0]).toContain("step cap");
   });
 
-  it("does not treat an empty answer on a refusal as M-47", () => {
+  it("does not treat an empty answer on a refusal as a failed summary", () => {
     // `emptyAnswer` is scoped to `answered`. A refusal with no prose is not the defect.
     const state = progressFrom([
       {
@@ -420,5 +418,29 @@ describe("the writing phase", () => {
       { type: "token", text: "recorded" },
     ]);
     expect(state.streamedText).toBe("Marsa Dubai recorded");
+  });
+});
+
+describe("the phrase map and the tool catalogue", () => {
+  it("has a real sentence for every registered tool", () => {
+    // The guard that was missing: a tool was registered and the status line
+    // said "Finished a step" for the tool the whole demo is built on, because nothing
+    // tied PHRASES to the list of tools that actually exist.
+    const missing = KNOWN_TOOLS.filter((t) => !isKnownTool(t));
+    expect(missing).toEqual([]);
+  });
+
+  it("names the dataset-wide tool without saying 'area'", () => {
+    // dataset_aggregate exists precisely because every other tool is area-scoped, so a
+    // phrase mentioning an area would describe the tool it was built to replace.
+    const line = reduceProgress(INITIAL_PROGRESS, {
+      type: "step",
+      step: 1,
+      tool: "dataset_aggregate",
+      category: "sql",
+      arguments: {},
+    }).lines.at(-1);
+    expect(line?.text).toMatch(/dataset/i);
+    expect(line?.text).not.toMatch(/area/i);
   });
 });

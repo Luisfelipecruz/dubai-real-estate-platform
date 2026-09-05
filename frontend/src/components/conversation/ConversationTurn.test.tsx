@@ -83,7 +83,7 @@ describe("the default view", () => {
 });
 
 describe("the evidence is always one click away", () => {
-  // Plan §12.7 gate 3, and the line §12.1 says must not be crossed. Every outcome.
+  // The line that must not be crossed: evidence is one click away from every outcome.
   const cases: Array<[string, ReturnType<typeof progressFromResponse>, AgentStep[]]> = [
     ["an ordinary answer", answered("Marsa Dubai recorded 61,286 sales."), EMPTY_RUN.steps as AgentStep[]],
     ["an empty answer", progressFromResponse(EMPTY_RUN), EMPTY_RUN.steps as AgentStep[]],
@@ -96,7 +96,7 @@ describe("the evidence is always one click away", () => {
     expect(screen.getByTestId("evidence-toggle")).toBeInTheDocument();
   });
 
-  it("reveals the complete, unmodified m18 trace in one click", async () => {
+  it("reveals the complete, unmodified trace in one click", async () => {
     const user = userEvent.setup();
     render(
       <ConversationTurn
@@ -109,7 +109,7 @@ describe("the evidence is always one click away", () => {
     expect(screen.queryByTestId("evidence-trace")).not.toBeInTheDocument();
     await user.click(screen.getByTestId("evidence-toggle"));
 
-    // The same component m18 ships, with all seven steps. Collapsed is not deleted.
+    // The same evidence component, with all seven steps. Collapsed is not deleted.
     expect(screen.getByTestId("evidence-trace")).toBeInTheDocument();
     expect(screen.getByText("step 4")).toBeInTheDocument();
     expect(screen.getAllByText("resolve_area_name").length).toBeGreaterThan(0);
@@ -123,8 +123,12 @@ describe("the evidence is always one click away", () => {
         steps={EMPTY_RUN.steps as AgentStep[]}
       />,
     );
-    // Six tool calls, one of which failed — both counted, neither estimated.
-    expect(screen.getByTestId("evidence-toggle")).toHaveTextContent("6 steps, 1 failed");
+    // SEVEN steps, one of which contains a failed call. The old assertion said six,
+    // because the label counted tool-producing steps while the panel below it listed
+    // every step including the reasoning-only synthesis turn -- and the comment here
+    // said "tool calls" while the label said "steps". The invariant is that the button
+    // describes the panel it opens, so both now come from the same array.
+    expect(screen.getByTestId("evidence-toggle")).toHaveTextContent("7 steps, 1 failed");
   });
 });
 
@@ -137,7 +141,7 @@ describe("the outcomes that are not an answer", () => {
         steps={EMPTY_RUN.steps as AgentStep[]}
       />,
     );
-    // M-47. §12.4: behind a conversational surface this run is otherwise a blank
+    // Behind a conversational surface this run is otherwise a blank
     // screen after 66 seconds.
     expect(screen.getByTestId("turn-empty")).toHaveTextContent(
       "could not write the summary",
